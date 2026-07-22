@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Starlink 多流路由可视化</title>
+    <style>
+        :root {
+            --panel-width: 340px;
+            --primary: #2563eb;
+            --border: #dbe3ef;
+            --muted: #64748b;
+            --panel-bg: rgba(255, 255, 255, 0.97);
+        }
+
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+        body { color: #1e293b; background: #f8fafc; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+        button, input { font: inherit; }
+
+        #canvas-container { width: 100vw; height: 100vh; cursor: grab; }
+        #canvas-container.dragging { cursor: grabbing; }
+        #topoCanvas { display: block; width: 100%; height: 100%; }
+
+        #sidebar {
+            position: fixed;
+            z-index: 20;
+            inset: 0 auto 0 0;
+            width: var(--panel-width);
+            background: var(--panel-bg);
+            border-right: 1px solid var(--border);
+            box-shadow: 8px 0 30px rgba(15, 23, 42, 0.12);
+            transform: translateX(0);
+            transition: transform 220ms ease;
+        }
+        #sidebar.collapsed { transform: translateX(-100%); }
+        .sidebar-content { height: 100%; padding: 18px; overflow-y: auto; }
+        .sidebar-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .sidebar-title { margin: 0; font-size: 19px; }
+        .sidebar-subtitle { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+        .icon-btn { border: 0; background: transparent; color: #64748b; cursor: pointer; font-size: 22px; }
+
+        #toggle-btn {
+            position: fixed; z-index: 21; top: 14px; left: 14px;
+            padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+            color: #334155; background: #fff; box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12); cursor: pointer;
+        }
+        #sidebar:not(.collapsed) ~ #toggle-btn { opacity: 0; pointer-events: none; }
+
+        .section { padding-top: 14px; margin-top: 14px; border-top: 1px solid #e8edf4; }
+        .section:first-of-type { padding-top: 0; margin-top: 0; border-top: 0; }
+        .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; color: #475569; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+        .field-label { display: block; margin: 8px 0 4px; color: var(--muted); font-size: 11px; }
+        .text-input { width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; color: #1e293b; background: #fff; font-size: 12px; }
+        .inline { display: flex; gap: 7px; }
+        .inline .text-input { flex: 1; min-width: 0; }
+
+        .btn { padding: 7px 10px; border: 0; border-radius: 6px; color: #fff; background: var(--primary); cursor: pointer; font-size: 12px; font-weight: 600; }
+        .btn:hover { filter: brightness(0.94); }
+        .btn.secondary { color: #475569; background: #e2e8f0; }
+        .btn.success { background: #16a34a; }
+        .btn.danger { background: #dc2626; }
+        .button-row { display: flex; gap: 7px; margin-top: 9px; }
+        .button-row .btn { flex: 1; }
+
+        #timeDisplay { margin-top: 10px; padding: 9px; border-radius: 6px; color: #86efac; background: #172033; text-align: center; font: 700 12px Consolas, monospace; }
+        #timeSlider { width: 100%; margin-top: 10px; accent-color: var(--primary); }
+
+        .drop-zone { padding: 12px; border: 1px dashed #94a3b8; border-radius: 8px; color: #64748b; background: #f8fafc; text-align: center; font-size: 11px; }
+        .drop-zone.dragover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+        #folderInput { width: 100%; margin-top: 8px; font-size: 11px; }
+        #loadingStatus { min-height: 17px; margin-top: 7px; color: #b45309; font-size: 11px; }
+
+        .flow-actions { display: flex; gap: 5px; }
+        .flow-actions button { padding: 2px 7px; border: 1px solid #cbd5e1; border-radius: 5px; color: #475569; background: #fff; cursor: pointer; font-size: 10px; }
+        #flowList { display: grid; gap: 7px; }
+        .empty { padding: 13px; border-radius: 7px; color: #94a3b8; background: #f8fafc; text-align: center; font-size: 11px; }
+        .flow-item { padding: 9px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+        .flow-main { display: grid; grid-template-columns: auto 24px 1fr auto; gap: 7px; align-items: center; }
+        .flow-color { width: 24px; height: 22px; padding: 0; border: 0; border-radius: 4px; cursor: pointer; }
+        .flow-name { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+        .flow-state { color: #16a34a; font-size: 10px; }
+        .flow-state.outage { color: #dc2626; }
+        .flow-detail { margin-top: 5px; overflow: hidden; color: #64748b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+        .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; color: #64748b; font-size: 11px; }
+        .legend-item { display: flex; align-items: center; gap: 7px; }
+        .line-sample { width: 22px; height: 2px; background: #7c8da6; }
+        .line-sample.dashed { height: 0; border-top: 2px dashed #7c3aed; background: transparent; }
+
+        #tooltip { position: fixed; z-index: 30; display: none; max-width: 260px; padding: 7px 10px; border: 1px solid #334155; border-radius: 6px; color: #fff; background: rgba(15, 23, 42, 0.92); pointer-events: none; font-size: 11px; }
+
+        @media (max-width: 600px) { :root { --panel-width: min(88vw, 340px); } }
+    </style>
+</head>
+
+<body>
+    <aside id="sidebar">
+        <div class="sidebar-content">
+            <header class="sidebar-header">
+                <div><h1 class="sidebar-title">Starlink 多流路由</h1><p class="sidebar-subtitle">连续世界地图 · 多源多宿同步显示</p></div>
+                <button class="icon-btn" type="button" onclick="toggleSidebar()" aria-label="收起侧栏">×</button>
+            </header>
+
+            <section class="section">
+                <div class="section-title">卫星搜索</div>
+                <div class="inline">
+                    <input id="inpSearch" class="text-input" type="text" placeholder="例如：100 或 STARLINK_100">
+                    <button class="btn" type="button" onclick="doSearch()">定位</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">仿真时间</div>
+                <label class="field-label" for="inpStart">开始时间</label>
+                <input id="inpStart" class="text-input" value="27 Feb 2025 00:00:00.000">
+                <label class="field-label" for="inpStop">结束时间</label>
+                <input id="inpStop" class="text-input" value="27 Feb 2025 01:00:00.000">
+                <button class="btn secondary" type="button" onclick="applyTimeSettings()" style="width:100%; margin-top:8px">应用并重置</button>
+                <div id="timeDisplay">WAITING...</div>
+                <input id="timeSlider" type="range" min="0" value="0" step="1" aria-label="仿真时间轴">
+                <div class="button-row">
+                    <button class="btn secondary" type="button" onclick="changeTime(-30)">−30 秒</button>
+                    <button class="btn secondary" type="button" onclick="changeTime(-5)">−5 秒</button>
+                    <button class="btn success" id="btnPlay" type="button" onclick="togglePlay()">播放</button>
+                    <button class="btn secondary" type="button" onclick="changeTime(5)">+5 秒</button>
+                    <button class="btn secondary" type="button" onclick="changeTime(30)">+30 秒</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">载入多流路径</div>
+                <div id="dropZone" class="drop-zone">
+                    选择包含 flow_000、flow_001… 的方法目录<br>也支持将一个或多个 CSV 文件直接拖到此处
+                    <input id="folderInput" type="file" webkitdirectory directory multiple accept=".csv">
+                </div>
+                <div id="loadingStatus"></div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">
+                    <span>流显示控制 <span id="flowCount"></span></span>
+                    <span class="flow-actions"><button type="button" onclick="setAllFlowsVisible(true)">全部打开</button><button type="button" onclick="setAllFlowsVisible(false)">全部关闭</button></span>
+                </div>
+                <div id="flowList"><div class="empty">尚未载入路径数据</div></div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">图例与操作</div>
+                <div class="legend">
+                    <div class="legend-item"><span class="line-sample"></span>轨道内链路</div>
+                    <div class="legend-item"><span class="line-sample dashed"></span>端点接入链路</div>
+                    <div class="legend-item"><span>●</span>普通卫星</div>
+                    <div class="legend-item"><span>◎</span>流内卫星</div>
+                    <div class="legend-item"><span>▲</span>流的源端点</div>
+                    <div class="legend-item"><span>◆</span>流的宿端点</div>
+                </div>
+                <p style="margin:9px 0 0; color:#94a3b8; font-size:10px; line-height:1.5">拖动平移，滚轮缩放。地图会在水平方向循环，跨越 ±180° 的路径始终连续。</p>
+            </section>
+        </div>
+    </aside>
+
+    <button id="toggle-btn" type="button" onclick="toggleSidebar()">☰ 菜单</button>
+    <div id="tooltip"></div>
+    <main id="canvas-container"><canvas id="topoCanvas"></canvas></main>
+
+    <script>
+        "use strict";
+
+        // ============================== 星座与轨道常量 ==============================
+        // 与原页面保持一致：190 个轨道面，每面 32 颗卫星，共 6080 颗。
+        const PLANES = 190;
+        const SATS_PER_PLANE = 32;
+        const PHASE_FACTOR = 17;
+        const INCLINATION = 53 * Math.PI / 180;
+        const EARTH_RADIUS_KM = 6378.137;
+        const ORBIT_ALTITUDE_KM = 550.0;
+        const EARTH_MU = 398600.4418;
+        const SEMI_MAJOR_AXIS = EARTH_RADIUS_KM + ORBIT_ALTITUDE_KM;
+        const MEAN_MOTION = Math.sqrt(EARTH_MU / Math.pow(SEMI_MAJOR_AXIS, 3));
+        const EARTH_ROTATION = 7.2921159e-5;
+
+        // 世界底图使用 2:1 等经纬投影。横向是周期坐标，纵向不是周期坐标。
+        const BASE_WORLD_WIDTH = 2000;
+        const BASE_WORLD_HEIGHT = 1000;
+        const FLOW_COLORS = ["#e11d48", "#7c3aed", "#0891b2", "#ea580c", "#16a34a", "#2563eb", "#c026d3", "#65a30d", "#dc2626", "#0d9488"];
+
+        // 保留原页面的两个地面站，同时允许 CSV 端点直接写 STARLINK_x（卫星源/宿）。
+        const groundStations = [
+            { name: "Beijing_Source", latDeg: 39.9042, lonDeg: 116.4074 },
+            { name: "Brasilia_Target", latDeg: -15.7975, lonDeg: -47.8919 }
+        ];
+        groundStations.forEach(gs => { gs.lat = gs.latDeg * Math.PI / 180; gs.lon = gs.lonDeg * Math.PI / 180; });
+
+        // ============================== 页面全局状态 ==============================
+        const canvas = document.getElementById("topoCanvas");
+        const ctx = canvas.getContext("2d");
+        const tooltip = document.getElementById("tooltip");
+        const container = document.getElementById("canvas-container");
+        const mapImage = new Image();
+        mapImage.src = "./map.jpg";
+
+        let viewportWidth = 0;
+        let viewportHeight = 0;
+        let deviceScale = 1;
+        let startTime = new Date();
+        let stopTime = new Date();
+        let currentTime = new Date();
+        let satellites = [];
+        let flowMap = new Map();
+        let searchedSatId = null;
+        let hoveredObject = null;
+        let isPlaying = false;
+        let playTimer = null;
+
+        const view = { scale: 1, offsetX: 0, offsetY: 0, dragging: false, lastX: 0, lastY: 0 };
+
+        // ============================== 基础 UI 与时间控制 ==============================
+        function toggleSidebar() { document.getElementById("sidebar").classList.toggle("collapsed"); }
+
+        function parseDateString(value) {
+            const parsed = new Date(value.trim());
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        }
+
+        function applyTimeSettings() {
+            const nextStart = parseDateString(document.getElementById("inpStart").value);
+            const nextStop = parseDateString(document.getElementById("inpStop").value);
+            if (!nextStart || !nextStop) { alert("请输入有效的开始和结束时间。"); return; }
+            if (nextStop <= nextStart) { alert("结束时间必须晚于开始时间。"); return; }
+
+            startTime = nextStart;
+            stopTime = nextStop;
+            currentTime = new Date(startTime);
+            const slider = document.getElementById("timeSlider");
+            slider.max = String((stopTime - startTime) / 1000);
+            slider.value = "0";
+            updateFrame();
+        }
+
+        function formatDate(date) {
+            const day = String(date.getDate()).padStart(2, "0");
+            const month = date.toLocaleString("en-US", { month: "short" });
+            const year = date.getFullYear();
+            const h = String(date.getHours()).padStart(2, "0");
+            const m = String(date.getMinutes()).padStart(2, "0");
+            const s = String(date.getSeconds()).padStart(2, "0");
+            return `${day} ${month} ${year} ${h}:${m}:${s}`;
+        }
+
+        function changeTime(deltaSeconds) {
+            const target = Math.max(startTime.getTime(), Math.min(stopTime.getTime(), currentTime.getTime() + deltaSeconds * 1000));
+            currentTime = new Date(target);
+            if (currentTime >= stopTime && isPlaying) togglePlay();
+            updateFrame();
+        }
+
+        function togglePlay() {
+            const button = document.getElementById("btnPlay");
+            if (isPlaying) {
+                clearInterval(playTimer);
+                playTimer = null;
+                isPlaying = false;
+                button.textContent = "播放";
+                button.classList.remove("danger");
+                button.classList.add("success");
+                return;
+            }
+            if (currentTime >= stopTime) currentTime = new Date(startTime);
+            isPlaying = true;
+            button.textContent = "停止";
+            button.classList.remove("success");
+            button.classList.add("danger");
+            playTimer = setInterval(() => changeTime(5), 100);
+        }
+
+        function updateFrame() {
+            document.getElementById("timeDisplay").textContent = formatDate(currentTime);
+            document.getElementById("timeSlider").value = String((currentTime - startTime) / 1000);
+            updateSatellites();
+            updateCurrentRoutes();
+            draw();
+        }
+
+        // ============================== CSV 文件与多流解析 ==============================
+        // 文件名示例：Calculated_step0001_27_Feb_2025_00_00_00_000000000.csv。
+        function extractTimeFromFilename(filename) {
+            const match = filename.match(/_(\d{1,2})_([A-Za-z]{3})_(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d+)/);
+            if (!match) return null;
+            const monthNames = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+            const month = monthNames[match[2].toLowerCase()];
+            if (month === undefined) return null;
+            return new Date(Number(match[3]), month, Number(match[1]), Number(match[4]), Number(match[5]), Number(match[6]), Number(match[7].slice(0, 3)) || 0);
+        }
+
+        // 不能简单用 split(',')，因为标准 CSV 允许路径字段被双引号包围且内部包含逗号。
+        function parseCSVRows(text) {
+            const rows = [];
+            let row = [], cell = "", quoted = false;
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                if (char === '"') {
+                    if (quoted && text[i + 1] === '"') { cell += '"'; i++; }
+                    else quoted = !quoted;
+                } else if (char === "," && !quoted) {
+                    row.push(cell); cell = "";
+                } else if ((char === "\n" || char === "\r") && !quoted) {
+                    if (char === "\r" && text[i + 1] === "\n") i++;
+                    row.push(cell); cell = "";
+                    if (row.some(value => value.trim() !== "")) rows.push(row);
+                    row = [];
+                } else cell += char;
+            }
+            row.push(cell);
+            if (row.some(value => value.trim() !== "")) rows.push(row);
+            return rows;
+        }
+
+        function normalizeHeader(value) { return value.replace(/^\uFEFF/, "").trim().toLowerCase(); }
+        function findColumn(headers, names) { return headers.findIndex(header => names.includes(normalizeHeader(header))); }
+
+        function parseSatelliteId(value) {
+            const match = String(value || "").match(/(?:STARLINK[_-]?)?(\d+)/i);
+            return match ? Number(match[1]) : null;
+        }
+
+        // 从相对目录优先识别 flow_000；若 CSV 自带 FlowID 列，则以该列为准。
+        function inferFlowId(file, row, flowColumn, rowIndex) {
+            if (flowColumn >= 0 && row[flowColumn] !== undefined && row[flowColumn].trim() !== "") return row[flowColumn].trim();
+            const relativePath = file.webkitRelativePath || file.name;
+            const folderMatch = relativePath.match(/(?:^|[\\/])flow[_-]?(\d+)/i);
+            if (folderMatch) return String(Number(folderMatch[1]));
+            const nameMatch = file.name.match(/flow[_-]?(\d+)/i);
+            if (nameMatch) return String(Number(nameMatch[1]));
+            // 一个文件有多行但没有 FlowID 时，每一行视为独立流。对于原页面的单流时间序列，
+            // 去掉 step 和时间后缀，使多个时刻的 Calculated_stepXXXX_*.csv 能聚合为同一条流。
+            const stableFileKey = file.name
+                .replace(/_?step\d+/i, "")
+                .replace(/_\d{1,2}_[A-Za-z]{3}_\d{4}_\d{2}_\d{2}_\d{2}_\d+.*$/i, "")
+                .replace(/\.csv$/i, "") || "default";
+            return rowIndex > 0 ? `${stableFileKey}#${rowIndex + 1}` : stableFileKey;
+        }
+
+        function parseRouteFile(file, text) {
+            const timestamp = extractTimeFromFilename(file.name);
+            if (!timestamp) return [];
+            const rows = parseCSVRows(text);
+            if (rows.length < 2) return [];
+            const headers = rows[0];
+            const pathColumn = findColumn(headers, ["path", "route"]);
+            const sourceColumn = findColumn(headers, ["sourcegs", "source", "src"]);
+            const targetColumn = findColumn(headers, ["targetgs", "target", "destination", "dest", "dst"]);
+            const flowColumn = findColumn(headers, ["flowid", "flow_id", "flow"]);
+            if (pathColumn < 0) return [];
+
+            return rows.slice(1).map((row, rowIndex) => {
+                const rawPath = String(row[pathColumn] || "").replace(/^['"]|['"]$/g, "").trim();
+                const outage = rawPath.toUpperCase() === "OUTAGE" || rawPath === "";
+                const ids = outage ? [] : Array.from(rawPath.matchAll(/STARLINK[_-]?(\d+)/gi), match => Number(match[1]));
+                return {
+                    flowId: inferFlowId(file, row, flowColumn, rowIndex),
+                    timestamp: timestamp.getTime(),
+                    ids,
+                    outage,
+                    source: sourceColumn >= 0 ? String(row[sourceColumn] || "").trim() : "",
+                    target: targetColumn >= 0 ? String(row[targetColumn] || "").trim() : "",
+                    fileName: file.name
+                };
+            });
+        }
+
+        async function loadRouteFiles(fileList) {
+            const files = Array.from(fileList).filter(file => file.name.toLowerCase().endsWith(".csv"));
+            const status = document.getElementById("loadingStatus");
+            if (!files.length) { status.textContent = "未找到 CSV 文件。"; return; }
+            status.textContent = `正在解析 ${files.length} 个文件…`;
+
+            const parsedGroups = await Promise.all(files.map(async file => parseRouteFile(file, await file.text())));
+            const records = parsedGroups.flat();
+            const previousVisibility = new Map(Array.from(flowMap, ([id, flow]) => [id, flow.visible]));
+            flowMap = new Map();
+
+            records.forEach(record => {
+                const key = String(record.flowId);
+                if (!flowMap.has(key)) {
+                    const colorIndex = flowMap.size % FLOW_COLORS.length;
+                    flowMap.set(key, { id: key, label: /^\d+$/.test(key) ? `流 ${key}` : key, color: FLOW_COLORS[colorIndex], visible: previousVisibility.get(key) ?? true, timeline: [], current: null });
+                }
+                flowMap.get(key).timeline.push(record);
+            });
+            flowMap.forEach(flow => flow.timeline.sort((a, b) => a.timestamp - b.timestamp));
+            status.textContent = `已载入 ${flowMap.size} 条流、${records.length} 条时序记录。`;
+            updateCurrentRoutes();
+            renderFlowList();
+            draw();
+        }
+
+        function updateCurrentRoutes() {
+            const timestamp = currentTime.getTime();
+            flowMap.forEach(flow => {
+                // 二分查找不晚于当前时刻的最后一条记录，文件很多时比逐条扫描稳定。
+                let low = 0, high = flow.timeline.length - 1, best = null;
+                while (low <= high) {
+                    const middle = (low + high) >> 1;
+                    if (flow.timeline[middle].timestamp <= timestamp) { best = flow.timeline[middle]; low = middle + 1; }
+                    else high = middle - 1;
+                }
+                flow.current = best;
+            });
+            renderFlowList();
+        }
+
+        function escapeHTML(value) {
+            return String(value).replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+        }
+
+        function renderFlowList() {
+            const list = document.getElementById("flowList");
+            document.getElementById("flowCount").textContent = flowMap.size ? `(${flowMap.size})` : "";
+            if (!flowMap.size) { list.innerHTML = '<div class="empty">尚未载入路径数据</div>'; return; }
+            list.innerHTML = Array.from(flowMap.values()).map(flow => {
+                const route = flow.current;
+                const stateClass = route && !route.outage ? "" : "outage";
+                const stateText = !route ? "暂无数据" : route.outage ? "OUTAGE" : `${route.ids.length} 星 / ${Math.max(0, route.ids.length - 1)} 跳`;
+                const endpoints = route ? `${route.source || "?"} → ${route.target || "?"}` : "当前时间之前没有记录";
+                return `<div class="flow-item"><div class="flow-main">
+                    <input type="checkbox" ${flow.visible ? "checked" : ""} aria-label="显示${escapeHTML(flow.label)}" onchange="setFlowVisible('${escapeHTML(flow.id)}', this.checked)">
+                    <input class="flow-color" type="color" value="${flow.color}" aria-label="${escapeHTML(flow.label)}颜色" onchange="setFlowColor('${escapeHTML(flow.id)}', this.value)">
+                    <span class="flow-name" title="${escapeHTML(flow.label)}">${escapeHTML(flow.label)}</span>
+                    <span class="flow-state ${stateClass}">${stateText}</span>
+                </div><div class="flow-detail" title="${escapeHTML(endpoints)}">${escapeHTML(endpoints)}</div></div>`;
+            }).join("");
+        }
+
+        function setFlowVisible(id, visible) { const flow = flowMap.get(String(id)); if (flow) { flow.visible = visible; draw(); } }
+        function setFlowColor(id, color) { const flow = flowMap.get(String(id)); if (flow) { flow.color = color; draw(); } }
+        function setAllFlowsVisible(visible) { flowMap.forEach(flow => { flow.visible = visible; }); renderFlowList(); draw(); }
+
+        // ============================== 星座位置计算 ==============================
+        function getGMST(date) {
+            const julianDate = date.getTime() / 86400000 + 2440587.5;
+            const daysSinceJ2000 = julianDate - 2451545.0;
+            let degrees = (280.46061837 + 360.98564736629 * daysSinceJ2000) % 360;
+            if (degrees < 0) degrees += 360;
+            return degrees * Math.PI / 180 + 2.095;
+        }
+
+        function updateSatellites() {
+            const elapsedSeconds = (currentTime - startTime) / 1000;
+            const earthAngle = getGMST(startTime) + EARTH_ROTATION * elapsedSeconds;
+            satellites = [];
+            const total = PLANES * SATS_PER_PLANE;
+            for (let plane = 0; plane < PLANES; plane++) {
+                const raan = 2 * Math.PI * plane / PLANES;
+                const phase = plane * PHASE_FACTOR * 2 * Math.PI / total;
+                for (let index = 0; index < SATS_PER_PLANE; index++) {
+                    const anomaly = index * 2 * Math.PI / SATS_PER_PLANE + phase + MEAN_MOTION * elapsedSeconds;
+                    const xOrbital = Math.cos(anomaly), yOrbital = Math.sin(anomaly);
+                    const xEci = xOrbital * Math.cos(raan) - yOrbital * Math.cos(INCLINATION) * Math.sin(raan);
+                    const yEci = xOrbital * Math.sin(raan) + yOrbital * Math.cos(INCLINATION) * Math.cos(raan);
+                    const zEci = yOrbital * Math.sin(INCLINATION);
+                    const xEcef = xEci * Math.cos(earthAngle) + yEci * Math.sin(earthAngle);
+                    const yEcef = -xEci * Math.sin(earthAngle) + yEci * Math.cos(earthAngle);
+                    satellites.push({ id: plane * SATS_PER_PLANE + index + 1, plane, index, lat: Math.asin(zEci), lon: Math.atan2(yEcef, xEcef) });
+                }
+            }
+        }
+
+        // ============================== 连续世界坐标与绘制 ==============================
+        function worldWidth() { return BASE_WORLD_WIDTH * view.scale; }
+        function worldHeight() { return BASE_WORLD_HEIGHT * view.scale; }
+
+        function getBaseScreenPos(lon, lat) {
+            return {
+                x: (lon + Math.PI) / (2 * Math.PI) * worldWidth() + view.offsetX,
+                y: (Math.PI / 2 - lat) / Math.PI * worldHeight() + view.offsetY
+            };
+        }
+
+        // 返回某个基础 x 坐标在当前窗口内所有可见的周期副本。
+        function visibleCopyXs(baseX, margin = 20) {
+            const period = worldWidth();
+            const first = Math.ceil((-margin - baseX) / period);
+            const last = Math.floor((viewportWidth + margin - baseX) / period);
+            const result = [];
+            for (let copy = first; copy <= last; copy++) result.push(baseX + copy * period);
+            return result;
+        }
+
+        function drawTiledMap() {
+            const mapW = worldWidth(), mapH = worldHeight();
+            const first = Math.ceil(-view.offsetX / mapW) - 1;
+            const last = Math.floor((viewportWidth - view.offsetX) / mapW) + 1;
+            for (let copy = first; copy <= last; copy++) {
+                const x = view.offsetX + copy * mapW;
+                if (mapImage.complete && mapImage.naturalWidth) {
+                    ctx.save();
+                    ctx.globalAlpha = 0.43;
+                    ctx.filter = "grayscale(100%) contrast(88%)";
+                    ctx.drawImage(mapImage, x, view.offsetY, mapW, mapH);
+                    ctx.restore();
+                } else {
+                    ctx.fillStyle = "#eef3f8";
+                    ctx.fillRect(x, view.offsetY, mapW, mapH);
+                }
+                ctx.strokeStyle = "rgba(100,116,139,0.2)";
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x, view.offsetY, mapW, mapH);
+            }
+        }
+
+        // 将第二个端点解包到离第一个端点最近的世界副本，再把整条线段周期复制。
+        // 这样跨越 +180°/-180° 的线不会横穿整张地图，也不会在边界处消失。
+        function drawPeriodicLine(pointA, pointB, color, lineWidth, dashed = false, alpha = 1) {
+            const a = getBaseScreenPos(pointA.lon, pointA.lat);
+            const b = getBaseScreenPos(pointB.lon, pointB.lat);
+            const period = worldWidth();
+            let deltaX = b.x - a.x;
+            if (deltaX > period / 2) deltaX -= period;
+            else if (deltaX < -period / 2) deltaX += period;
+            const unwrappedBX = a.x + deltaX;
+            const minX = Math.min(a.x, unwrappedBX), maxX = Math.max(a.x, unwrappedBX);
+            const first = Math.ceil((-20 - maxX) / period);
+            const last = Math.floor((viewportWidth + 20 - minX) / period);
+
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = alpha;
+            ctx.lineWidth = lineWidth;
+            ctx.lineCap = "round";
+            ctx.setLineDash(dashed ? [7, 5] : []);
+            ctx.beginPath();
+            for (let copy = first; copy <= last; copy++) {
+                const shift = copy * period;
+                ctx.moveTo(a.x + shift, a.y);
+                ctx.lineTo(unwrappedBX + shift, b.y);
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function endpointPosition(name) {
+            const satId = parseSatelliteId(name);
+            if (satId && satellites[satId - 1]) return satellites[satId - 1];
+            return groundStations.find(gs => gs.name.toLowerCase() === String(name).toLowerCase()) || null;
+        }
+
+        function activeSatelliteColors() {
+            const colors = new Map();
+            flowMap.forEach(flow => {
+                if (!flow.visible || !flow.current || flow.current.outage) return;
+                flow.current.ids.forEach(id => { if (!colors.has(id)) colors.set(id, []); colors.get(id).push(flow.color); });
+            });
+            return colors;
+        }
+
+        function drawRoute(flow) {
+            const route = flow.current;
+            if (!flow.visible || !route || route.outage || !route.ids.length) return;
+            const routeSats = route.ids.map(id => satellites[id - 1]).filter(Boolean);
+            if (!routeSats.length) return;
+            const source = endpointPosition(route.source);
+            const target = endpointPosition(route.target);
+            if (source && source !== routeSats[0]) drawPeriodicLine(source, routeSats[0], flow.color, 2, true, 0.9);
+            for (let i = 0; i < routeSats.length - 1; i++) drawPeriodicLine(routeSats[i], routeSats[i + 1], flow.color, 3, false, 0.95);
+            if (target && target !== routeSats[routeSats.length - 1]) drawPeriodicLine(routeSats[routeSats.length - 1], target, flow.color, 2, true, 0.9);
+        }
+
+        function drawGroundStations() {
+            groundStations.forEach(gs => {
+                const position = getBaseScreenPos(gs.lon, gs.lat);
+                visibleCopyXs(position.x, 30).forEach(x => {
+                    if (position.y < -30 || position.y > viewportHeight + 30) return;
+                    ctx.beginPath();
+                    ctx.moveTo(x, position.y - 9); ctx.lineTo(x - 9, position.y + 9); ctx.lineTo(x + 9, position.y + 9); ctx.closePath();
+                    ctx.fillStyle = "#dc2626"; ctx.fill();
+                    ctx.fillStyle = "#334155"; ctx.font = "600 11px Segoe UI"; ctx.fillText(gs.name, x + 11, position.y + 4);
+                });
+            });
+        }
+
+        function drawSatellites() {
+            const activeColors = activeSatelliteColors();
+            satellites.forEach(sat => {
+                const position = getBaseScreenPos(sat.lon, sat.lat);
+                visibleCopyXs(position.x, 12).forEach(x => {
+                    if (position.y < -12 || position.y > viewportHeight + 12) return;
+                    const colors = activeColors.get(sat.id);
+                    const active = colors && colors.length;
+                    ctx.beginPath(); ctx.arc(x, position.y, active ? 4.5 : 2.2, 0, Math.PI * 2);
+                    ctx.fillStyle = active ? colors[0] : "rgba(30,41,59,0.78)"; ctx.fill();
+                    if (active) {
+                        ctx.beginPath(); ctx.arc(x, position.y, 7.5, 0, Math.PI * 2);
+                        ctx.strokeStyle = colors.length > 1 ? "#ffffff" : colors[0]; ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
+                    }
+                });
+            });
+        }
+
+        function drawSearchMarker() {
+            const sat = searchedSatId ? satellites[searchedSatId - 1] : null;
+            if (!sat) return;
+            const position = getBaseScreenPos(sat.lon, sat.lat);
+            visibleCopyXs(position.x, 18).forEach(x => {
+                ctx.beginPath(); ctx.arc(x, position.y, 13, 0, Math.PI * 2);
+                ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 2.5; ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(x - 17, position.y); ctx.lineTo(x + 17, position.y); ctx.moveTo(x, position.y - 17); ctx.lineTo(x, position.y + 17); ctx.lineWidth = 1.5; ctx.stroke();
+            });
+        }
+
+        function drawEndpointMarker(point, color, kind) {
+            if (!point) return;
+            const position = getBaseScreenPos(point.lon, point.lat);
+            visibleCopyXs(position.x, 14).forEach(x => {
+                if (position.y < -14 || position.y > viewportHeight + 14) return;
+                ctx.save();
+                ctx.fillStyle = color;
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                if (kind === "source") {
+                    // 源端点使用向上的三角形，与原页面的地面站图形保持直观一致。
+                    ctx.moveTo(x, position.y - 9);
+                    ctx.lineTo(x - 8, position.y + 7);
+                    ctx.lineTo(x + 8, position.y + 7);
+                    ctx.closePath();
+                } else {
+                    // 宿端点使用菱形；即使源和宿都是卫星，仍可一眼区分方向。
+                    ctx.moveTo(x, position.y - 9);
+                    ctx.lineTo(x + 9, position.y);
+                    ctx.lineTo(x, position.y + 9);
+                    ctx.lineTo(x - 9, position.y);
+                    ctx.closePath();
+                }
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+            });
+        }
+
+        function drawFlowEndpoints() {
+            flowMap.forEach(flow => {
+                if (!flow.visible || !flow.current || flow.current.outage) return;
+                const route = flow.current;
+                // CSV 端点为空时退回路径首尾卫星，保证任意合法 Path 都能显示源/宿标记。
+                const source = endpointPosition(route.source) || satellites[route.ids[0] - 1];
+                const target = endpointPosition(route.target) || satellites[route.ids[route.ids.length - 1] - 1];
+                drawEndpointMarker(source, flow.color, "source");
+                drawEndpointMarker(target, flow.color, "target");
+            });
+        }
+
+        function draw() {
+            ctx.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+            ctx.clearRect(0, 0, viewportWidth, viewportHeight);
+            ctx.fillStyle = "#f8fafc"; ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+            drawTiledMap();
+
+            // 背景轨道链路同样采用周期线段，所以蓝色网格也不会在日期变更线断开。
+            satellites.forEach(sat => {
+                const next = satellites[sat.plane * SATS_PER_PLANE + (sat.index + 1) % SATS_PER_PLANE];
+                drawPeriodicLine(sat, next, "#3b82f6", 0.7, false, 0.13);
+            });
+            flowMap.forEach(drawRoute);
+            drawGroundStations();
+            drawSatellites();
+            drawFlowEndpoints();
+            drawSearchMarker();
+        }
+
+        // ============================== 鼠标、缩放与命中检测 ==============================
+        function normalizeHorizontalOffset() {
+            // 平移很久后将偏移归一到一个世界宽度内，避免浮点数无限增大；画面不会跳变。
+            const period = worldWidth();
+            view.offsetX = ((view.offsetX % period) + period) % period - period;
+        }
+
+        function resize() {
+            deviceScale = Math.max(1, window.devicePixelRatio || 1);
+            viewportWidth = window.innerWidth;
+            viewportHeight = window.innerHeight;
+            canvas.width = Math.round(viewportWidth * deviceScale);
+            canvas.height = Math.round(viewportHeight * deviceScale);
+            canvas.style.width = `${viewportWidth}px`;
+            canvas.style.height = `${viewportHeight}px`;
+            draw();
+        }
+
+        function nearestPeriodicX(baseX, pointerX) {
+            const period = worldWidth();
+            return baseX + Math.round((pointerX - baseX) / period) * period;
+        }
+
+        function hitTest(pointerX, pointerY) {
+            for (const gs of groundStations) {
+                const position = getBaseScreenPos(gs.lon, gs.lat);
+                const x = nearestPeriodicX(position.x, pointerX);
+                if (Math.hypot(pointerX - x, pointerY - position.y) <= 13) return { type: "GS", object: gs, x, y: position.y };
+            }
+            let nearest = null, nearestDistance = 10;
+            for (const sat of satellites) {
+                const position = getBaseScreenPos(sat.lon, sat.lat);
+                const x = nearestPeriodicX(position.x, pointerX);
+                const distance = Math.hypot(pointerX - x, pointerY - position.y);
+                if (distance < nearestDistance) { nearestDistance = distance; nearest = { type: "SAT", object: sat, x, y: position.y }; }
+            }
+            return nearest;
+        }
+
+        function updateTooltip(event) {
+            hoveredObject = hitTest(event.clientX, event.clientY);
+            if (!hoveredObject) { tooltip.style.display = "none"; return; }
+            tooltip.style.display = "block";
+            tooltip.style.left = `${event.clientX + 14}px`;
+            tooltip.style.top = `${event.clientY + 14}px`;
+            if (hoveredObject.type === "GS") {
+                const gs = hoveredObject.object;
+                tooltip.innerHTML = `<strong>${escapeHTML(gs.name)}</strong><br>经度 ${gs.lonDeg.toFixed(2)}° · 纬度 ${gs.latDeg.toFixed(2)}°`;
+            } else {
+                const sat = hoveredObject.object;
+                tooltip.innerHTML = `<strong>STARLINK_${sat.id}</strong><br>轨道面 ${sat.plane} · 面内编号 ${sat.index}`;
+            }
+        }
+
+        function doSearch() {
+            const id = parseSatelliteId(document.getElementById("inpSearch").value);
+            if (!id || id < 1 || id > satellites.length) { searchedSatId = null; alert("请输入 1 到 6080 之间的卫星编号。"); }
+            else searchedSatId = id;
+            draw();
+        }
+
+        // ============================== 初始化与事件绑定 ==============================
+        document.getElementById("timeSlider").addEventListener("input", event => {
+            currentTime = new Date(startTime.getTime() + Number(event.target.value) * 1000);
+            updateFrame();
+        });
+        document.getElementById("folderInput").addEventListener("change", event => loadRouteFiles(event.target.files));
+        document.getElementById("inpSearch").addEventListener("keydown", event => { if (event.key === "Enter") doSearch(); });
+
+        const dropZone = document.getElementById("dropZone");
+        ["dragenter", "dragover"].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.add("dragover"); }));
+        ["dragleave", "drop"].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.remove("dragover"); }));
+        dropZone.addEventListener("drop", event => loadRouteFiles(event.dataTransfer.files));
+
+        canvas.addEventListener("mousedown", event => { view.dragging = true; view.lastX = event.clientX; view.lastY = event.clientY; container.classList.add("dragging"); });
+        window.addEventListener("mouseup", () => { view.dragging = false; container.classList.remove("dragging"); });
+        canvas.addEventListener("mousemove", event => {
+            if (view.dragging) {
+                view.offsetX += event.clientX - view.lastX;
+                view.offsetY += event.clientY - view.lastY;
+                view.lastX = event.clientX; view.lastY = event.clientY;
+                normalizeHorizontalOffset();
+                draw();
+            }
+            updateTooltip(event);
+        });
+        canvas.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+        canvas.addEventListener("wheel", event => {
+            event.preventDefault();
+            const factor = Math.exp(event.deltaY < 0 ? 0.1 : -0.1);
+            const nextScale = view.scale * factor;
+            if (nextScale < 0.12 || nextScale > 40) return;
+            // 以鼠标位置为缩放中心，保证用户关注的地理点留在鼠标下方。
+            view.offsetX = event.clientX - (event.clientX - view.offsetX) * factor;
+            view.offsetY = event.clientY - (event.clientY - view.offsetY) * factor;
+            view.scale = nextScale;
+            normalizeHorizontalOffset();
+            draw();
+        }, { passive: false });
+        window.addEventListener("resize", resize);
+        mapImage.addEventListener("load", draw);
+
+        // 初始显示完整世界，并在视口中居中；之后执行时间初始化和首帧轨道计算。
+        view.scale = Math.min(window.innerWidth / BASE_WORLD_WIDTH, window.innerHeight / BASE_WORLD_HEIGHT);
+        view.scale = Math.max(view.scale, 0.55);
+        view.offsetX = (window.innerWidth - BASE_WORLD_WIDTH * view.scale) / 2;
+        view.offsetY = (window.innerHeight - BASE_WORLD_HEIGHT * view.scale) / 2;
+        resize();
+        applyTimeSettings();
+    </script>
+</body>
+
+</html>

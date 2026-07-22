@@ -333,7 +333,7 @@
                 <button class="action-btn btn-gray" onclick="fastForward()" title="Forward 30s">30s »</button>
             </div>
 
-            <div class="info-row">Planes: 72 | Sats: 22 (Total: 1584)</div>
+            <div class="info-row">Planes: 190 | Sats: 32 (Total: 6080)</div>
             <div class="info-row">Inc: 53° | Phase: 17</div>
 
             <div class="legend-item">
@@ -376,7 +376,9 @@
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('collapsed'); }
 
         // --- Physics ---
-        const P = 72, N = 22, F = 17;
+        // MARL-LISL 数据集共有 6080 颗卫星。仿真节点采用 0-based ID，导出器会
+        // 转成此页面使用的 STARLINK_1 ... STARLINK_6080 一基编号。
+        const P = 190, N = 32, F = 17;
         const INC = 53 * (Math.PI / 180);
         const Re = 6378.137, h = 550.0;
         const mu = 398600.4418, a = Re + h;
@@ -580,6 +582,12 @@
             }
 
             if (!rawPath) return null;
+
+            // MARL-LISL 导出器用 OUTAGE 表示该时隙没有可行路径。仍保留这条时间
+            // 记录，并用空 ID 数组清除上一时隙的高亮线路。
+            if (rawPath.trim() === 'OUTAGE') {
+                return { ids: [], source: sourceName, target: targetName, rawPath: rawPath };
+            }
 
             const ids = [];
             rawPath.replace(/['"]/g, '').split(' -> ').forEach(part => {

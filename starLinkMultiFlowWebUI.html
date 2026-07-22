@@ -112,6 +112,16 @@
             </section>
 
             <section class="section">
+                <div class="section-title">星座构型</div>
+                <select id="constellationSelect" class="text-input" aria-label="选择星座构型">
+                    <option value="stk_1584">当前 STK 数据：72 × 22（1584 星）</option>
+                    <option value="legacy_6080">YAML 预期构型：190 × 32（6080 星）</option>
+                </select>
+                <div id="constellationInfo" style="margin-top:7px; color:#64748b; font-size:10px; line-height:1.5"></div>
+                <div id="constellationStatus" style="margin-top:5px; min-height:15px; font-size:10px"></div>
+            </section>
+
+            <section class="section">
                 <div class="section-title">仿真时间</div>
                 <label class="field-label" for="inpStart">开始时间</label>
                 <input id="inpStart" class="text-input" value="27 Feb 2025 00:00:00.000">
@@ -148,6 +158,11 @@
 
             <section class="section">
                 <div class="section-title">图例与操作</div>
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; color:#475569; font-size:12px; cursor:pointer">
+                    <!-- 默认不勾选，因此页面初次打开时不会显示任何地面站元素。 -->
+                    <input id="groundStationToggle" type="checkbox">
+                    <span>显示地面站</span>
+                </label>
                 <div class="legend">
                     <div class="legend-item"><span class="line-sample"></span>轨道内链路</div>
                     <div class="legend-item"><span class="line-sample dashed"></span>端点接入链路</div>
@@ -169,16 +184,32 @@
         "use strict";
 
         // ============================== 星座与轨道常量 ==============================
-        // 与原页面保持一致：190 个轨道面，每面 32 颗卫星，共 6080 颗。
-        const PLANES = 190;
-        const SATS_PER_PLANE = 32;
-        const PHASE_FACTOR = 17;
-        const INCLINATION = 53 * Math.PI / 180;
+        // 这里只保留项目内有明确依据的固定构型：当前 STK 文件实际包含 1584 颗卫星，
+        // preprocess/env YAML 则仍把预期规模写成 6080。两者不能共用同一个编号映射。
+        const CONSTELLATION_PRESETS = {
+            stk_1584: {
+                name: "当前 STK 数据",
+                planes: 72,
+                satsPerPlane: 22,
+                phaseFactor: 17,
+                inclinationDeg: 53,
+                altitudeKm: 550,
+                evidence: "匹配 sat_state_m.npy 的 1584 颗卫星及原 walker_2d_mesh.html"
+            },
+            legacy_6080: {
+                name: "YAML 预期构型",
+                planes: 190,
+                satsPerPlane: 32,
+                phaseFactor: 17,
+                inclinationDeg: 53,
+                altitudeKm: 550,
+                evidence: "匹配 configs/env.yaml、configs/preprocess.yaml 中的 6080 配置"
+            }
+        };
+        // 当前真实数据是 72×22，因此页面启动时必须默认选择 stk_1584。
+        let constellation = CONSTELLATION_PRESETS.stk_1584;
         const EARTH_RADIUS_KM = 6378.137;
-        const ORBIT_ALTITUDE_KM = 550.0;
         const EARTH_MU = 398600.4418;
-        const SEMI_MAJOR_AXIS = EARTH_RADIUS_KM + ORBIT_ALTITUDE_KM;
-        const MEAN_MOTION = Math.sqrt(EARTH_MU / Math.pow(SEMI_MAJOR_AXIS, 3));
         const EARTH_ROTATION = 7.2921159e-5;
 
         // 世界底图使用 2:1 等经纬投影。横向是周期坐标，纵向不是周期坐标。
@@ -211,6 +242,8 @@
         let flowMap = new Map();
         let searchedSatId = null;
         let hoveredObject = null;
+        // 地面站默认关闭；只有用户主动打开开关后才绘制标记、接入链路并参与命中检测。
+        let showGroundStations = false;
         let isPlaying = false;
         let playTimer = null;
 
@@ -218,6 +251,52 @@
 
         // ============================== 基础 UI 与时间控制 ==============================
         function toggleSidebar() { document.getElementById("sidebar").classList.toggle("collapsed"); }
+
+        function constellationTotal() {
+            return constellation.planes * constellation.satsPerPlane;
+        }
+
+        function renderConstellationInfo() {
+            const total = constellationTotal();
+            document.getElementById("constellationInfo").innerHTML =
+                `<strong>${escapeHTML(constellation.name)}</strong><br>` +
+                `${constellation.planes} 个轨道面 × 每面 ${constellation.satsPerPlane} 星 = ${total} 星<br>` +
+                `倾角 ${constellation.inclinationDeg}° · 高度 ${constellation.altitudeKm} km · 相位因子 ${constellation.phaseFactor}<br>` +
+                escapeHTML(constellation.evidence);
+        }
+
+        function updateConstellationCompatibility() {
+            const status = document.getElementById("constellationStatus");
+            if (!flowMap.size) {
+                status.textContent = "载入路径后会自动检查卫星编号范围。";
+                status.style.color = "#64748b";
+                return;
+            }
+            let maximumId = 0;
+            flowMap.forEach(flow => flow.timeline.forEach(route => {
+                route.ids.forEach(id => { maximumId = Math.max(maximumId, id); });
+                maximumId = Math.max(maximumId, parseSatelliteId(route.source) || 0, parseSatelliteId(route.target) || 0);
+            }));
+            const total = constellationTotal();
+            if (maximumId > total) {
+                status.textContent = `不匹配：路径最大编号 ${maximumId}，当前构型只有 ${total} 颗卫星。`;
+                status.style.color = "#dc2626";
+            } else {
+                status.textContent = `编号检查通过：路径最大编号 ${maximumId} / 构型容量 ${total}。`;
+                status.style.color = "#16a34a";
+            }
+        }
+
+        function applyConstellationPreset(presetId) {
+            const preset = CONSTELLATION_PRESETS[presetId];
+            if (!preset) return;
+            constellation = preset;
+            // 搜索目标超出新构型范围时主动清除，避免留下一个无法绘制的旧标记。
+            if (searchedSatId && searchedSatId > constellationTotal()) searchedSatId = null;
+            renderConstellationInfo();
+            updateConstellationCompatibility();
+            updateFrame();
+        }
 
         function parseDateString(value) {
             const parsed = new Date(value.trim());
@@ -392,6 +471,7 @@
             flowMap.forEach(flow => flow.timeline.sort((a, b) => a.timestamp - b.timestamp));
             status.textContent = `已载入 ${flowMap.size} 条流、${records.length} 条时序记录。`;
             updateCurrentRoutes();
+            updateConstellationCompatibility();
             renderFlowList();
             draw();
         }
@@ -449,20 +529,25 @@
         function updateSatellites() {
             const elapsedSeconds = (currentTime - startTime) / 1000;
             const earthAngle = getGMST(startTime) + EARTH_ROTATION * elapsedSeconds;
+            const inclination = constellation.inclinationDeg * Math.PI / 180;
+            const semiMajorAxis = EARTH_RADIUS_KM + constellation.altitudeKm;
+            const meanMotion = Math.sqrt(EARTH_MU / Math.pow(semiMajorAxis, 3));
+            const planes = constellation.planes;
+            const satsPerPlane = constellation.satsPerPlane;
             satellites = [];
-            const total = PLANES * SATS_PER_PLANE;
-            for (let plane = 0; plane < PLANES; plane++) {
-                const raan = 2 * Math.PI * plane / PLANES;
-                const phase = plane * PHASE_FACTOR * 2 * Math.PI / total;
-                for (let index = 0; index < SATS_PER_PLANE; index++) {
-                    const anomaly = index * 2 * Math.PI / SATS_PER_PLANE + phase + MEAN_MOTION * elapsedSeconds;
+            const total = planes * satsPerPlane;
+            for (let plane = 0; plane < planes; plane++) {
+                const raan = 2 * Math.PI * plane / planes;
+                const phase = plane * constellation.phaseFactor * 2 * Math.PI / total;
+                for (let index = 0; index < satsPerPlane; index++) {
+                    const anomaly = index * 2 * Math.PI / satsPerPlane + phase + meanMotion * elapsedSeconds;
                     const xOrbital = Math.cos(anomaly), yOrbital = Math.sin(anomaly);
-                    const xEci = xOrbital * Math.cos(raan) - yOrbital * Math.cos(INCLINATION) * Math.sin(raan);
-                    const yEci = xOrbital * Math.sin(raan) + yOrbital * Math.cos(INCLINATION) * Math.cos(raan);
-                    const zEci = yOrbital * Math.sin(INCLINATION);
+                    const xEci = xOrbital * Math.cos(raan) - yOrbital * Math.cos(inclination) * Math.sin(raan);
+                    const yEci = xOrbital * Math.sin(raan) + yOrbital * Math.cos(inclination) * Math.cos(raan);
+                    const zEci = yOrbital * Math.sin(inclination);
                     const xEcef = xEci * Math.cos(earthAngle) + yEci * Math.sin(earthAngle);
                     const yEcef = -xEci * Math.sin(earthAngle) + yEci * Math.cos(earthAngle);
-                    satellites.push({ id: plane * SATS_PER_PLANE + index + 1, plane, index, lat: Math.asin(zEci), lon: Math.atan2(yEcef, xEcef) });
+                    satellites.push({ id: plane * satsPerPlane + index + 1, plane, index, lat: Math.asin(zEci), lon: Math.atan2(yEcef, xEcef) });
                 }
             }
         }
@@ -546,6 +631,10 @@
             return groundStations.find(gs => gs.name.toLowerCase() === String(name).toLowerCase()) || null;
         }
 
+        function isGroundStation(point) {
+            return point ? groundStations.includes(point) : false;
+        }
+
         function activeSatelliteColors() {
             const colors = new Map();
             flowMap.forEach(flow => {
@@ -562,12 +651,18 @@
             if (!routeSats.length) return;
             const source = endpointPosition(route.source);
             const target = endpointPosition(route.target);
-            if (source && source !== routeSats[0]) drawPeriodicLine(source, routeSats[0], flow.color, 2, true, 0.9);
+            // 关闭地面站显示时，也隐藏连接地面站和卫星的虚线；卫星到卫星的路径不受影响。
+            if (source && source !== routeSats[0] && (showGroundStations || !isGroundStation(source))) {
+                drawPeriodicLine(source, routeSats[0], flow.color, 2, true, 0.9);
+            }
             for (let i = 0; i < routeSats.length - 1; i++) drawPeriodicLine(routeSats[i], routeSats[i + 1], flow.color, 3, false, 0.95);
-            if (target && target !== routeSats[routeSats.length - 1]) drawPeriodicLine(routeSats[routeSats.length - 1], target, flow.color, 2, true, 0.9);
+            if (target && target !== routeSats[routeSats.length - 1] && (showGroundStations || !isGroundStation(target))) {
+                drawPeriodicLine(routeSats[routeSats.length - 1], target, flow.color, 2, true, 0.9);
+            }
         }
 
         function drawGroundStations() {
+            if (!showGroundStations) return;
             groundStations.forEach(gs => {
                 const position = getBaseScreenPos(gs.lon, gs.lat);
                 visibleCopyXs(position.x, 30).forEach(x => {
@@ -646,8 +741,8 @@
                 // CSV 端点为空时退回路径首尾卫星，保证任意合法 Path 都能显示源/宿标记。
                 const source = endpointPosition(route.source) || satellites[route.ids[0] - 1];
                 const target = endpointPosition(route.target) || satellites[route.ids[route.ids.length - 1] - 1];
-                drawEndpointMarker(source, flow.color, "source");
-                drawEndpointMarker(target, flow.color, "target");
+                if (showGroundStations || !isGroundStation(source)) drawEndpointMarker(source, flow.color, "source");
+                if (showGroundStations || !isGroundStation(target)) drawEndpointMarker(target, flow.color, "target");
             });
         }
 
@@ -659,7 +754,8 @@
 
             // 背景轨道链路同样采用周期线段，所以蓝色网格也不会在日期变更线断开。
             satellites.forEach(sat => {
-                const next = satellites[sat.plane * SATS_PER_PLANE + (sat.index + 1) % SATS_PER_PLANE];
+                const satsPerPlane = constellation.satsPerPlane;
+                const next = satellites[sat.plane * satsPerPlane + (sat.index + 1) % satsPerPlane];
                 drawPeriodicLine(sat, next, "#3b82f6", 0.7, false, 0.13);
             });
             flowMap.forEach(drawRoute);
@@ -693,10 +789,12 @@
         }
 
         function hitTest(pointerX, pointerY) {
-            for (const gs of groundStations) {
-                const position = getBaseScreenPos(gs.lon, gs.lat);
-                const x = nearestPeriodicX(position.x, pointerX);
-                if (Math.hypot(pointerX - x, pointerY - position.y) <= 13) return { type: "GS", object: gs, x, y: position.y };
+            if (showGroundStations) {
+                for (const gs of groundStations) {
+                    const position = getBaseScreenPos(gs.lon, gs.lat);
+                    const x = nearestPeriodicX(position.x, pointerX);
+                    if (Math.hypot(pointerX - x, pointerY - position.y) <= 13) return { type: "GS", object: gs, x, y: position.y };
+                }
             }
             let nearest = null, nearestDistance = 10;
             for (const sat of satellites) {
@@ -725,7 +823,10 @@
 
         function doSearch() {
             const id = parseSatelliteId(document.getElementById("inpSearch").value);
-            if (!id || id < 1 || id > satellites.length) { searchedSatId = null; alert("请输入 1 到 6080 之间的卫星编号。"); }
+            if (!id || id < 1 || id > satellites.length) {
+                searchedSatId = null;
+                alert(`当前构型请输入 1 到 ${constellationTotal()} 之间的卫星编号。`);
+            }
             else searchedSatId = id;
             draw();
         }
@@ -737,6 +838,16 @@
         });
         document.getElementById("folderInput").addEventListener("change", event => loadRouteFiles(event.target.files));
         document.getElementById("inpSearch").addEventListener("keydown", event => { if (event.key === "Enter") doSearch(); });
+        document.getElementById("constellationSelect").addEventListener("change", event => applyConstellationPreset(event.target.value));
+        document.getElementById("groundStationToggle").addEventListener("change", event => {
+            showGroundStations = event.target.checked;
+            // 若关闭开关时鼠标正停在地面站上，需要立即清除已经显示的提示框。
+            if (!showGroundStations && hoveredObject && hoveredObject.type === "GS") {
+                hoveredObject = null;
+                tooltip.style.display = "none";
+            }
+            draw();
+        });
 
         const dropZone = document.getElementById("dropZone");
         ["dragenter", "dragover"].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.add("dragover"); }));
@@ -777,6 +888,8 @@
         view.offsetX = (window.innerWidth - BASE_WORLD_WIDTH * view.scale) / 2;
         view.offsetY = (window.innerHeight - BASE_WORLD_HEIGHT * view.scale) / 2;
         resize();
+        renderConstellationInfo();
+        updateConstellationCompatibility();
         applyTimeSettings();
     </script>
 </body>

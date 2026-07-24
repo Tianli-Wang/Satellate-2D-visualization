@@ -84,6 +84,17 @@
         .flow-state.outage { color: #dc2626; }
         .flow-detail { margin-top: 5px; overflow: hidden; color: #64748b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
+        /* 方法对比卡片同时承担图例和统计信息的作用：左侧色条对应地图上的路径颜色。 */
+        #comparisonList { display: grid; gap: 7px; margin-top: 8px; }
+        .comparison-item { padding: 8px; border: 1px solid #e2e8f0; border-left: 4px solid var(--method-color); border-radius: 7px; background: #fff; }
+        .comparison-main { display: grid; grid-template-columns: auto 24px 1fr auto; gap: 7px; align-items: center; }
+        .comparison-name { overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+        .comparison-path { margin-top: 5px; color: #64748b; font: 10px/1.45 Consolas, "Microsoft YaHei", monospace; overflow-wrap: anywhere; }
+        .comparison-summary { margin-top: 7px; padding: 7px; border-radius: 6px; color: #475569; background: #f8fafc; font-size: 10px; line-height: 1.5; }
+        .status-same { color: #16a34a; }
+        .status-different { color: #d97706; }
+        .status-outage { color: #dc2626; }
+
         .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; color: #64748b; font-size: 11px; }
         .legend-item { display: flex; align-items: center; gap: 7px; }
         .line-sample { width: 22px; height: 2px; background: #7c8da6; }
@@ -141,11 +152,34 @@
 
             <section class="section">
                 <div class="section-title">载入多流路径</div>
+                <label class="field-label" for="methodNameInput">方法名称（可选）</label>
+                <input id="methodNameInput" class="text-input" type="text" placeholder="留空时从 flow_* 的上级目录推断">
                 <div id="dropZone" class="drop-zone">
                     选择包含 flow_000、flow_001… 的方法目录<br>也支持将一个或多个 CSV 文件直接拖到此处
                     <input id="folderInput" type="file" webkitdirectory directory multiple accept=".csv">
                 </div>
                 <div id="loadingStatus"></div>
+            </section>
+
+            <section id="methodSection" class="section" hidden>
+                <div class="section-title">
+                    <span>已载入方法 <span id="methodCount"></span></span>
+                    <span class="flow-actions"><button type="button" onclick="clearLoadedMethods()">清空</button></span>
+                </div>
+                <label class="field-label" for="activeMethodSelect">普通模式显示的方法</label>
+                <select id="activeMethodSelect" class="text-input" aria-label="普通模式显示的方法"></select>
+            </section>
+
+            <section id="comparisonSection" class="section" hidden>
+                <div class="section-title">同一条流的跨方法对比</div>
+                <label style="display:flex; align-items:center; gap:8px; color:#475569; font-size:12px; cursor:pointer">
+                    <input id="comparisonToggle" type="checkbox">
+                    <span>启用路径叠加对比</span>
+                </label>
+                <label class="field-label" for="comparisonFlowSelect">要对比的流</label>
+                <select id="comparisonFlowSelect" class="text-input" aria-label="要对比的流"></select>
+                <div id="comparisonSummary" class="comparison-summary">至少载入两个方法后即可对比。</div>
+                <div id="comparisonList"></div>
             </section>
 
             <section class="section">
@@ -239,7 +273,13 @@
         let stopTime = new Date();
         let currentTime = new Date();
         let satellites = [];
+        // methodMap 保存所有已经载入的方法；flowMap 始终指向普通模式当前选中方法的流集合，
+        // 这样既能新增跨方法对比，又不必破坏原有的流列表、显隐控制和绘图逻辑。
+        let methodMap = new Map();
         let flowMap = new Map();
+        let activeMethodId = "";
+        let importBatchNumber = 0;
+        const comparisonState = { enabled: false, flowId: "" };
         let searchedSatId = null;
         let hoveredObject = null;
         // 地面站默认关闭；只有用户主动打开开关后才绘制标记、接入链路并参与命中检测。
@@ -267,16 +307,17 @@
 
         function updateConstellationCompatibility() {
             const status = document.getElementById("constellationStatus");
-            if (!flowMap.size) {
+            if (!methodMap.size) {
                 status.textContent = "载入路径后会自动检查卫星编号范围。";
                 status.style.color = "#64748b";
                 return;
             }
             let maximumId = 0;
-            flowMap.forEach(flow => flow.timeline.forEach(route => {
-                route.ids.forEach(id => { maximumId = Math.max(maximumId, id); });
-                maximumId = Math.max(maximumId, parseSatelliteId(route.source) || 0, parseSatelliteId(route.target) || 0);
-            }));
+            // 对所有已载入方法做兼容性检查，避免普通模式只选中编号较小的方法时漏报越界路径。
+            methodMap.forEach(method => method.flows.forEach(flow => flow.timeline.forEach(route => {
+                    route.ids.forEach(id => { maximumId = Math.max(maximumId, id); });
+                    maximumId = Math.max(maximumId, parseSatelliteId(route.source) || 0, parseSatelliteId(route.target) || 0);
+                })));
             const total = constellationTotal();
             if (maximumId > total) {
                 status.textContent = `不匹配：路径最大编号 ${maximumId}，当前构型只有 ${total} 颗卫星。`;
@@ -406,7 +447,12 @@
 
         // 从相对目录优先识别 flow_000；若 CSV 自带 FlowID 列，则以该列为准。
         function inferFlowId(file, row, flowColumn, rowIndex) {
-            if (flowColumn >= 0 && row[flowColumn] !== undefined && row[flowColumn].trim() !== "") return row[flowColumn].trim();
+            if (flowColumn >= 0 && row[flowColumn] !== undefined && row[flowColumn].trim() !== "") {
+                const explicitFlowId = row[flowColumn].trim();
+                // 将 CSV 中的 000、00 等纯数字编号统一成 "0"，保证它能与目录名 flow_000
+                // 推断出的编号以及其他方法中的 FlowID=0 对齐；非数字业务编号保持原样。
+                return /^\d+$/.test(explicitFlowId) ? String(Number(explicitFlowId)) : explicitFlowId;
+            }
             const relativePath = file.webkitRelativePath || file.name;
             const folderMatch = relativePath.match(/(?:^|[\\/])flow[_-]?(\d+)/i);
             if (folderMatch) return String(Number(folderMatch[1]));
@@ -421,7 +467,19 @@
             return rowIndex > 0 ? `${stableFileKey}#${rowIndex + 1}` : stableFileKey;
         }
 
-        function parseRouteFile(file, text) {
+        // 方法名优先使用用户输入；未输入时，取 flow_000 目录的直接上级目录。
+        // 例如 results/MAPPO/flow_000/a.csv 会识别为 MAPPO，用户因此既可以逐个选择方法目录，
+        // 也可以一次选择包含多个方法的 results 总目录。浏览器未提供相对路径时使用本批次兜底名称。
+        function inferMethodId(file, methodNameOverride, fallbackMethodName) {
+            if (methodNameOverride) return methodNameOverride;
+            const relativePath = String(file.webkitRelativePath || "").replace(/\\/g, "/");
+            const parts = relativePath.split("/").filter(Boolean);
+            const flowDirectoryIndex = parts.findIndex(part => /^flow[_-]?\d+$/i.test(part));
+            if (flowDirectoryIndex > 0) return parts[flowDirectoryIndex - 1];
+            return fallbackMethodName;
+        }
+
+        function parseRouteFile(file, text, methodNameOverride, fallbackMethodName) {
             const timestamp = extractTimeFromFilename(file.name);
             if (!timestamp) return [];
             const rows = parseCSVRows(text);
@@ -438,6 +496,7 @@
                 const outage = rawPath.toUpperCase() === "OUTAGE" || rawPath === "";
                 const ids = outage ? [] : Array.from(rawPath.matchAll(/STARLINK[_-]?(\d+)/gi), match => Number(match[1]));
                 return {
+                    methodId: inferMethodId(file, methodNameOverride, fallbackMethodName),
                     flowId: inferFlowId(file, row, flowColumn, rowIndex),
                     timestamp: timestamp.getTime(),
                     ids,
@@ -455,44 +514,238 @@
             if (!files.length) { status.textContent = "未找到 CSV 文件。"; return; }
             status.textContent = `正在解析 ${files.length} 个文件…`;
 
-            const parsedGroups = await Promise.all(files.map(async file => parseRouteFile(file, await file.text())));
+            // 每次选择文件只读取一次输入框，确保同一批文件不会因解析期间用户修改文本而被分到不同方法。
+            const methodNameOverride = document.getElementById("methodNameInput").value.trim();
+            const fallbackMethodName = `方法 ${++importBatchNumber}`;
+            const parsedGroups = await Promise.all(files.map(async file =>
+                parseRouteFile(file, await file.text(), methodNameOverride, fallbackMethodName)
+            ));
             const records = parsedGroups.flat();
-            const previousVisibility = new Map(Array.from(flowMap, ([id, flow]) => [id, flow.visible]));
-            flowMap = new Map();
+            if (!records.length) {
+                status.textContent = "CSV 中未找到可解析的路径记录，请检查文件名时间戳与 Path/Route 列。";
+                return;
+            }
 
+            // 同一次选择可以包含多个方法。对于本批次出现的方法采用整批替换语义，
+            // 这样用户重新选择某个方法目录时不会把旧时序记录重复追加一遍。
+            const recordsByMethod = new Map();
             records.forEach(record => {
-                const key = String(record.flowId);
-                if (!flowMap.has(key)) {
-                    const colorIndex = flowMap.size % FLOW_COLORS.length;
-                    flowMap.set(key, { id: key, label: /^\d+$/.test(key) ? `流 ${key}` : key, color: FLOW_COLORS[colorIndex], visible: previousVisibility.get(key) ?? true, timeline: [], current: null });
-                }
-                flowMap.get(key).timeline.push(record);
+                const methodId = String(record.methodId);
+                if (!recordsByMethod.has(methodId)) recordsByMethod.set(methodId, []);
+                recordsByMethod.get(methodId).push(record);
             });
-            flowMap.forEach(flow => flow.timeline.sort((a, b) => a.timestamp - b.timestamp));
-            status.textContent = `已载入 ${flowMap.size} 条流、${records.length} 条时序记录。`;
+
+            recordsByMethod.forEach((methodRecords, methodId) => {
+                const previousMethod = methodMap.get(methodId);
+                const previousVisibility = new Map(previousMethod
+                    ? Array.from(previousMethod.flows, ([id, flow]) => [id, flow.visible])
+                    : []);
+                const flows = new Map();
+                methodRecords.forEach(record => {
+                    const flowId = String(record.flowId);
+                    if (!flows.has(flowId)) {
+                        const colorIndex = flows.size % FLOW_COLORS.length;
+                        flows.set(flowId, {
+                            id: flowId,
+                            label: /^\d+$/.test(flowId) ? `流 ${flowId}` : flowId,
+                            color: FLOW_COLORS[colorIndex],
+                            visible: previousVisibility.get(flowId) ?? true,
+                            timeline: [],
+                            current: null
+                        });
+                    }
+                    flows.get(flowId).timeline.push(record);
+                });
+                flows.forEach(flow => flow.timeline.sort((a, b) => a.timestamp - b.timestamp));
+
+                const methodColorIndex = previousMethod ? previousMethod.colorIndex : methodMap.size % FLOW_COLORS.length;
+                methodMap.set(methodId, {
+                    id: methodId,
+                    label: methodId,
+                    flows,
+                    colorIndex: methodColorIndex,
+                    color: previousMethod ? previousMethod.color : FLOW_COLORS[methodColorIndex],
+                    comparisonVisible: previousMethod ? previousMethod.comparisonVisible : true
+                });
+                activeMethodId = methodId;
+            });
+
+            flowMap = methodMap.get(activeMethodId).flows;
+            status.textContent = `本次载入 ${recordsByMethod.size} 个方法、${records.length} 条时序记录；当前共 ${methodMap.size} 个方法。`;
             updateCurrentRoutes();
             updateConstellationCompatibility();
+            renderMethodControls();
+            renderComparisonControls();
             renderFlowList();
             draw();
+            // 允许选择同一个目录后再次触发 change，便于原地刷新计算结果。
+            document.getElementById("folderInput").value = "";
         }
 
         function updateCurrentRoutes() {
             const timestamp = currentTime.getTime();
-            flowMap.forEach(flow => {
-                // 二分查找不晚于当前时刻的最后一条记录，文件很多时比逐条扫描稳定。
-                let low = 0, high = flow.timeline.length - 1, best = null;
-                while (low <= high) {
-                    const middle = (low + high) >> 1;
-                    if (flow.timeline[middle].timestamp <= timestamp) { best = flow.timeline[middle]; low = middle + 1; }
-                    else high = middle - 1;
-                }
-                flow.current = best;
-            });
+            methodMap.forEach(method => method.flows.forEach(flow => {
+                    // 二分查找不晚于当前时刻的最后一条记录，文件很多时比逐条扫描稳定。
+                    let low = 0, high = flow.timeline.length - 1, best = null;
+                    while (low <= high) {
+                        const middle = (low + high) >> 1;
+                        if (flow.timeline[middle].timestamp <= timestamp) { best = flow.timeline[middle]; low = middle + 1; }
+                        else high = middle - 1;
+                    }
+                    flow.current = best;
+                }));
             renderFlowList();
+            renderComparisonList();
         }
 
         function escapeHTML(value) {
             return String(value).replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+        }
+
+        function compareFlowIds(a, b) {
+            // 纯数字流编号按数值排序，其他名称按中文自然排序，避免出现 1、10、2 的反直觉顺序。
+            if (/^\d+$/.test(a) && /^\d+$/.test(b)) return Number(a) - Number(b);
+            return String(a).localeCompare(String(b), "zh-CN", { numeric: true });
+        }
+
+        function renderMethodControls() {
+            const section = document.getElementById("methodSection");
+            const select = document.getElementById("activeMethodSelect");
+            section.hidden = !methodMap.size;
+            document.getElementById("methodCount").textContent = methodMap.size ? `(${methodMap.size})` : "";
+            if (!methodMap.size) { select.innerHTML = ""; return; }
+            select.innerHTML = Array.from(methodMap.values()).map(method =>
+                `<option value="${escapeHTML(method.id)}" ${method.id === activeMethodId ? "selected" : ""}>` +
+                `${escapeHTML(method.label)}（${method.flows.size} 条流）</option>`
+            ).join("");
+        }
+
+        function setActiveMethod(methodId) {
+            const method = methodMap.get(String(methodId));
+            if (!method) return;
+            activeMethodId = method.id;
+            flowMap = method.flows;
+            renderFlowList();
+            draw();
+        }
+
+        function renderComparisonControls() {
+            const section = document.getElementById("comparisonSection");
+            const toggle = document.getElementById("comparisonToggle");
+            const select = document.getElementById("comparisonFlowSelect");
+            section.hidden = !methodMap.size;
+            toggle.disabled = methodMap.size < 2;
+
+            // 取所有方法流编号的并集；某方法缺少所选流时仍保留该方法卡片并明确显示“未包含该流”。
+            const flowIds = new Set();
+            methodMap.forEach(method => method.flows.forEach((_flow, flowId) => flowIds.add(flowId)));
+            const sortedFlowIds = Array.from(flowIds).sort(compareFlowIds);
+            if (!sortedFlowIds.includes(comparisonState.flowId)) comparisonState.flowId = sortedFlowIds[0] || "";
+            select.innerHTML = sortedFlowIds.map(flowId => {
+                let methodCount = 0;
+                methodMap.forEach(method => { if (method.flows.has(flowId)) methodCount++; });
+                const label = /^\d+$/.test(flowId) ? `流 ${flowId}` : flowId;
+                return `<option value="${escapeHTML(flowId)}" ${flowId === comparisonState.flowId ? "selected" : ""}>` +
+                    `${escapeHTML(label)}（${methodCount}/${methodMap.size} 个方法）</option>`;
+            }).join("");
+
+            if (methodMap.size < 2) {
+                comparisonState.enabled = false;
+                toggle.checked = false;
+            } else toggle.checked = comparisonState.enabled;
+            renderComparisonList();
+        }
+
+        function routeSignature(route) {
+            if (!route) return "NO_DATA";
+            if (route.outage) return "OUTAGE";
+            return route.ids.join(">");
+        }
+
+        function renderComparisonList() {
+            const list = document.getElementById("comparisonList");
+            const summary = document.getElementById("comparisonSummary");
+            if (!methodMap.size || !comparisonState.flowId) {
+                list.innerHTML = "";
+                summary.textContent = "载入路径数据后可选择要对比的流。";
+                return;
+            }
+
+            const rows = Array.from(methodMap.values()).map(method => ({
+                method,
+                flow: method.flows.get(comparisonState.flowId) || null
+            }));
+            const validSignatures = new Set(rows
+                .map(row => row.flow ? routeSignature(row.flow.current) : "NO_FLOW")
+                .filter(signature => signature !== "NO_DATA" && signature !== "NO_FLOW"));
+            const availableCount = rows.filter(row => row.flow && row.flow.current).length;
+            const outageCount = rows.filter(row => row.flow && row.flow.current && row.flow.current.outage).length;
+
+            if (methodMap.size < 2) {
+                summary.textContent = "至少载入两个方法后即可叠加对比；当前可先检查该方法的路径明细。";
+            } else {
+                const differenceText = validSignatures.size <= 1 ? "当前有效路径一致" : `发现 ${validSignatures.size} 种不同路径`;
+                summary.textContent = `${availableCount}/${methodMap.size} 个方法在当前时刻有记录，${differenceText}` +
+                    (outageCount ? `，其中 ${outageCount} 个 OUTAGE。` : "。");
+            }
+
+            let referenceSignature = null;
+            for (const row of rows) {
+                const route = row.flow && row.flow.current;
+                if (route && !route.outage) { referenceSignature = routeSignature(route); break; }
+            }
+
+            list.innerHTML = rows.map(({ method, flow }) => {
+                const route = flow && flow.current;
+                let stateText = "未包含该流", stateClass = "status-outage", pathText = "—";
+                if (flow && !route) {
+                    stateText = "当前时刻无数据";
+                } else if (route && route.outage) {
+                    stateText = "OUTAGE";
+                    pathText = "OUTAGE";
+                } else if (route) {
+                    const isSame = referenceSignature === routeSignature(route);
+                    stateText = `${Math.max(0, route.ids.length - 1)} 跳 · ${isSame ? "与基准相同" : "与基准不同"}`;
+                    stateClass = isSame ? "status-same" : "status-different";
+                    pathText = route.ids.map(id => `STARLINK_${id}`).join(" → ");
+                }
+                return `<div class="comparison-item" style="--method-color:${method.color}">
+                    <div class="comparison-main">
+                        <input class="comparison-visible" type="checkbox" data-method-id="${escapeHTML(method.id)}"
+                            ${method.comparisonVisible ? "checked" : ""} aria-label="显示${escapeHTML(method.label)}的对比路径">
+                        <input class="flow-color comparison-color" type="color" data-method-id="${escapeHTML(method.id)}"
+                            value="${method.color}" aria-label="${escapeHTML(method.label)}的对比颜色">
+                        <span class="comparison-name" title="${escapeHTML(method.label)}">${escapeHTML(method.label)}</span>
+                        <span class="${stateClass}">${stateText}</span>
+                    </div>
+                    <div class="comparison-path" title="${escapeHTML(pathText)}">${escapeHTML(pathText)}</div>
+                </div>`;
+            }).join("");
+        }
+
+        function setMethodComparisonVisible(methodId, visible) {
+            const method = methodMap.get(String(methodId));
+            if (method) { method.comparisonVisible = visible; draw(); }
+        }
+
+        function setMethodComparisonColor(methodId, color) {
+            const method = methodMap.get(String(methodId));
+            if (method) { method.color = color; renderComparisonList(); draw(); }
+        }
+
+        function clearLoadedMethods() {
+            if (methodMap.size && !confirm("确定清空所有已载入的方法和路径吗？")) return;
+            methodMap = new Map();
+            flowMap = new Map();
+            activeMethodId = "";
+            comparisonState.enabled = false;
+            comparisonState.flowId = "";
+            document.getElementById("loadingStatus").textContent = "已清空路径数据。";
+            renderMethodControls();
+            renderComparisonControls();
+            renderFlowList();
+            updateConstellationCompatibility();
+            draw();
         }
 
         function renderFlowList() {
@@ -635,9 +888,25 @@
             return point ? groundStations.includes(point) : false;
         }
 
+        function displayedFlows() {
+            if (!comparisonState.enabled || methodMap.size < 2 || !comparisonState.flowId) {
+                return Array.from(flowMap.values());
+            }
+
+            // 对比模式下用“方法颜色”覆盖原来的“流颜色”，并构造轻量视图对象交给既有绘图函数。
+            // 原始 flow 不被修改，因此关闭对比后，普通模式下用户为各流设置的颜色仍会完整保留。
+            const result = [];
+            methodMap.forEach(method => {
+                const flow = method.flows.get(comparisonState.flowId);
+                if (!method.comparisonVisible || !flow) return;
+                result.push({ ...flow, color: method.color, visible: true, methodId: method.id });
+            });
+            return result;
+        }
+
         function activeSatelliteColors() {
             const colors = new Map();
-            flowMap.forEach(flow => {
+            displayedFlows().forEach(flow => {
                 if (!flow.visible || !flow.current || flow.current.outage) return;
                 flow.current.ids.forEach(id => { if (!colors.has(id)) colors.set(id, []); colors.get(id).push(flow.color); });
             });
@@ -735,7 +1004,7 @@
         }
 
         function drawFlowEndpoints() {
-            flowMap.forEach(flow => {
+            displayedFlows().forEach(flow => {
                 if (!flow.visible || !flow.current || flow.current.outage) return;
                 const route = flow.current;
                 // CSV 端点为空时退回路径首尾卫星，保证任意合法 Path 都能显示源/宿标记。
@@ -758,7 +1027,7 @@
                 const next = satellites[sat.plane * satsPerPlane + (sat.index + 1) % satsPerPlane];
                 drawPeriodicLine(sat, next, "#3b82f6", 0.7, false, 0.13);
             });
-            flowMap.forEach(drawRoute);
+            displayedFlows().forEach(drawRoute);
             drawGroundStations();
             drawSatellites();
             drawFlowEndpoints();
@@ -839,6 +1108,32 @@
         document.getElementById("folderInput").addEventListener("change", event => loadRouteFiles(event.target.files));
         document.getElementById("inpSearch").addEventListener("keydown", event => { if (event.key === "Enter") doSearch(); });
         document.getElementById("constellationSelect").addEventListener("change", event => applyConstellationPreset(event.target.value));
+        document.getElementById("activeMethodSelect").addEventListener("change", event => setActiveMethod(event.target.value));
+        document.getElementById("comparisonToggle").addEventListener("change", event => {
+            comparisonState.enabled = event.target.checked && methodMap.size >= 2;
+            renderComparisonList();
+            draw();
+        });
+        document.getElementById("comparisonFlowSelect").addEventListener("change", event => {
+            comparisonState.flowId = event.target.value;
+            renderComparisonList();
+            draw();
+        });
+        // 对比方法卡片会随时间和流选择整体重绘，使用事件委托可以避免每次重绘后重复绑定监听器。
+        document.getElementById("comparisonList").addEventListener("change", event => {
+            const methodId = event.target.dataset.methodId;
+            if (!methodId) return;
+            if (event.target.classList.contains("comparison-visible")) {
+                setMethodComparisonVisible(methodId, event.target.checked);
+            } else if (event.target.classList.contains("comparison-color")) {
+                setMethodComparisonColor(methodId, event.target.value);
+            }
+        });
+        document.getElementById("comparisonList").addEventListener("input", event => {
+            if (event.target.classList.contains("comparison-color")) {
+                setMethodComparisonColor(event.target.dataset.methodId, event.target.value);
+            }
+        });
         document.getElementById("groundStationToggle").addEventListener("change", event => {
             showGroundStations = event.target.checked;
             // 若关闭开关时鼠标正停在地面站上，需要立即清除已经显示的提示框。

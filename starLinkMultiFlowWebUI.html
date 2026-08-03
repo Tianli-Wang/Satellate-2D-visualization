@@ -72,6 +72,20 @@
         #folderInput { width: 100%; margin-top: 8px; font-size: 11px; }
         #loadingStatus { min-height: 17px; margin-top: 7px; color: #b45309; font-size: 11px; }
 
+        .server-directory-row { display: flex; gap: 7px; margin-top: 8px; }
+        .server-directory-row .text-input { flex: 1; min-width: 0; }
+        #directoryDialog { width: min(620px, calc(100vw - 32px)); padding: 0; border: 0; border-radius: 10px; box-shadow: 0 18px 60px rgba(15, 23, 42, 0.3); }
+        #directoryDialog::backdrop { background: rgba(15, 23, 42, 0.45); }
+        .directory-dialog-content { padding: 16px; }
+        .directory-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .directory-dialog-title { margin: 0; font-size: 16px; }
+        #serverDirectoryCurrent { margin: 10px 0; padding: 8px; border-radius: 6px; color: #475569; background: #f1f5f9; font: 11px/1.45 Consolas, monospace; overflow-wrap: anywhere; }
+        #serverDirectoryList { max-height: 52vh; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 7px; }
+        .directory-entry { display: block; width: 100%; padding: 9px 11px; border: 0; border-bottom: 1px solid #edf2f7; color: #334155; background: #fff; text-align: left; cursor: pointer; font-size: 12px; }
+        .directory-entry:last-child { border-bottom: 0; }
+        .directory-entry:hover { background: #eff6ff; }
+        .directory-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+
         .flow-actions { display: flex; gap: 5px; }
         .flow-actions button { padding: 2px 7px; border: 1px solid #cbd5e1; border-radius: 5px; color: #475569; background: #fff; cursor: pointer; font-size: 10px; }
         #flowList { display: grid; gap: 7px; }
@@ -99,6 +113,15 @@
         .legend-item { display: flex; align-items: center; gap: 7px; }
         .line-sample { width: 22px; height: 2px; background: #7c8da6; }
         .line-sample.dashed { height: 0; border-top: 2px dashed #7c3aed; background: transparent; }
+
+        #groundStationControls { margin: 8px 0 10px; }
+        #groundStationControls.disabled #groundStationPairList { opacity: 0.48; pointer-events: none; }
+        #groundStationPairList { display: grid; gap: 6px; margin-top: 7px; }
+        .ground-pair-item { padding: 7px 8px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; }
+        .ground-pair-label { display: flex; align-items: center; gap: 7px; color: #334155; font-size: 11px; font-weight: 700; cursor: pointer; }
+        .ground-pair-stations { margin: 4px 0 0 22px; color: #64748b; font-size: 10px; line-height: 1.4; }
+        #groundStationFileInput { width: 100%; margin-top: 5px; font-size: 10px; }
+        #groundStationStatus { min-height: 15px; margin-top: 5px; color: #64748b; font-size: 10px; line-height: 1.4; }
 
         #tooltip { position: fixed; z-index: 30; display: none; max-width: 260px; padding: 7px 10px; border: 1px solid #334155; border-radius: 6px; color: #fff; background: rgba(15, 23, 42, 0.92); pointer-events: none; font-size: 11px; }
 
@@ -155,9 +178,15 @@
                 <label class="field-label" for="methodNameInput">方法名称（可选）</label>
                 <input id="methodNameInput" class="text-input" type="text" placeholder="留空时从 flow_* 的上级目录推断">
                 <div id="dropZone" class="drop-zone">
-                    选择包含 flow_000、flow_001… 的方法目录<br>也支持将一个或多个 CSV 文件直接拖到此处
+                    选择本地包含 flow_000、flow_001… 的方法目录<br>也支持将一个或多个 CSV 文件直接拖到此处
                     <input id="folderInput" type="file" webkitdirectory directory multiple accept=".csv">
                 </div>
+                <label class="field-label" for="serverDirectoryPath">服务器目录（需使用 serve_webui.py 启动）</label>
+                <div class="server-directory-row">
+                    <input id="serverDirectoryPath" class="text-input" type="text" placeholder="点击浏览服务器目录" readonly>
+                    <button id="browseServerDirectoryButton" class="btn secondary" type="button">浏览</button>
+                </div>
+                <button id="loadServerDirectoryButton" class="btn" type="button" style="width:100%; margin-top:7px" disabled>载入服务器目录</button>
                 <div id="loadingStatus"></div>
             </section>
 
@@ -197,6 +226,13 @@
                     <input id="groundStationToggle" type="checkbox">
                     <span>显示地面站</span>
                 </label>
+                <div id="groundStationControls" class="disabled">
+                    <div class="field-label">按地面站对显示</div>
+                    <div id="groundStationPairList"></div>
+                    <label class="field-label" for="groundStationFileInput">载入自定义地面站 CSV</label>
+                    <input id="groundStationFileInput" type="file" accept=".csv">
+                    <div id="groundStationStatus"></div>
+                </div>
                 <div class="legend">
                     <div class="legend-item"><span class="line-sample"></span>轨道内链路</div>
                     <div class="legend-item"><span class="line-sample dashed"></span>端点接入链路</div>
@@ -211,6 +247,20 @@
     </aside>
 
     <button id="toggle-btn" type="button" onclick="toggleSidebar()">☰ 菜单</button>
+    <dialog id="directoryDialog">
+        <div class="directory-dialog-content">
+            <div class="directory-dialog-header">
+                <h2 class="directory-dialog-title">选择服务器目录</h2>
+                <button id="closeDirectoryDialogButton" class="icon-btn" type="button" aria-label="关闭">×</button>
+            </div>
+            <div id="serverDirectoryCurrent">正在读取…</div>
+            <div id="serverDirectoryList"></div>
+            <div class="directory-dialog-actions">
+                <button id="cancelDirectoryButton" class="btn secondary" type="button">取消</button>
+                <button id="selectDirectoryButton" class="btn" type="button">选择当前目录</button>
+            </div>
+        </div>
+    </dialog>
     <div id="tooltip"></div>
     <main id="canvas-container"><canvas id="topoCanvas"></canvas></main>
 
@@ -251,12 +301,29 @@
         const BASE_WORLD_HEIGHT = 1000;
         const FLOW_COLORS = ["#e11d48", "#7c3aed", "#0891b2", "#ea580c", "#16a34a", "#2563eb", "#c026d3", "#65a30d", "#dc2626", "#0d9488"];
 
-        // 保留原页面的两个地面站，同时允许 CSV 端点直接写 STARLINK_x（卫星源/宿）。
-        const groundStations = [
-            { name: "Beijing_Source", latDeg: 39.9042, lonDeg: 116.4074 },
-            { name: "Brasilia_Target", latDeg: -15.7975, lonDeg: -47.8919 }
+        // 默认配置与 AddGroundStationAccess.py 保持一致。aliases 用于兼容项目历史
+        // 路由文件中的 Beijing_Source / Brasilia_Target 命名。
+        let groundStations = [
+            { pairName: "Beijing-Brasilia", role: "source", name: "Beijing", aliases: ["Beijing_Source"], latDeg: 39.9042, lonDeg: 116.4074 },
+            { pairName: "Beijing-Brasilia", role: "target", name: "Brasilia", aliases: ["Brasilia_Target"], latDeg: -15.7975, lonDeg: -47.8919 },
+            { pairName: "NewYork-London", role: "source", name: "NewYork", aliases: ["NewYork_Source", "New_York"], latDeg: 40.7128, lonDeg: -74.0060 },
+            { pairName: "NewYork-London", role: "target", name: "London", aliases: ["London_Target"], latDeg: 51.5074, lonDeg: -0.1278 }
         ];
-        groundStations.forEach(gs => { gs.lat = gs.latDeg * Math.PI / 180; gs.lon = gs.lonDeg * Math.PI / 180; });
+        const groundStationPairVisibility = new Map();
+
+        function prepareGroundStations(stations, preserveVisibility = true) {
+            const previousVisibility = preserveVisibility ? new Map(groundStationPairVisibility) : new Map();
+            groundStationPairVisibility.clear();
+            stations.forEach(gs => {
+                gs.lat = gs.latDeg * Math.PI / 180;
+                gs.lon = gs.lonDeg * Math.PI / 180;
+                gs.aliases = Array.isArray(gs.aliases) ? gs.aliases : [];
+                if (!groundStationPairVisibility.has(gs.pairName)) {
+                    groundStationPairVisibility.set(gs.pairName, previousVisibility.get(gs.pairName) ?? true);
+                }
+            });
+        }
+        prepareGroundStations(groundStations, false);
 
         // ============================== 页面全局状态 ==============================
         const canvas = document.getElementById("topoCanvas");
@@ -440,8 +507,118 @@
         function normalizeHeader(value) { return value.replace(/^\uFEFF/, "").trim().toLowerCase(); }
         function findColumn(headers, names) { return headers.findIndex(header => names.includes(normalizeHeader(header))); }
 
+        function normalizeEndpointName(value) {
+            return String(value || "").trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "");
+        }
+
+        function isGroundStationPairVisible(pairName) {
+            return groundStationPairVisibility.get(pairName) !== false;
+        }
+
+        function isGroundStationVisible(station) {
+            return Boolean(station && showGroundStations && isGroundStationPairVisible(station.pairName));
+        }
+
+        function renderGroundStationControls() {
+            const list = document.getElementById("groundStationPairList");
+            const stationsByPair = new Map();
+            groundStations.forEach(gs => {
+                if (!stationsByPair.has(gs.pairName)) stationsByPair.set(gs.pairName, []);
+                stationsByPair.get(gs.pairName).push(gs);
+            });
+            list.innerHTML = Array.from(stationsByPair, ([pairName, stations]) => {
+                const checked = isGroundStationPairVisible(pairName) ? "checked" : "";
+                const endpoints = stations.map(gs => `${gs.role}: ${gs.name}`).join(" · ");
+                return `<div class="ground-pair-item">
+                    <label class="ground-pair-label">
+                        <input class="ground-pair-toggle" type="checkbox" data-pair-name="${escapeHTML(pairName)}" ${checked}>
+                        <span>${escapeHTML(pairName)}</span>
+                    </label>
+                    <div class="ground-pair-stations">${escapeHTML(endpoints)}</div>
+                </div>`;
+            }).join("");
+            document.getElementById("groundStationControls").classList.toggle("disabled", !showGroundStations);
+        }
+
+        function parseGroundStationConfig(text) {
+            const rows = parseCSVRows(text);
+            if (rows.length < 2) throw new Error("地面站 CSV 没有数据行");
+            const headers = rows[0];
+            const pairColumn = findColumn(headers, ["pair_name", "pairname", "pair"]);
+            const roleColumn = findColumn(headers, ["role", "endpoint", "station_role"]);
+            const nameColumn = findColumn(headers, ["station_name", "ground_station_name", "name"]);
+            const latColumn = findColumn(headers, ["latitude_deg", "lat_deg", "latitude", "lat"]);
+            const lonColumn = findColumn(headers, ["longitude_deg", "lon_deg", "longitude", "lon"]);
+            const aliasColumn = findColumn(headers, ["aliases", "alias"]);
+            if ([pairColumn, roleColumn, nameColumn, latColumn, lonColumn].some(index => index < 0)) {
+                throw new Error("缺少 pair_name、role、station_name、latitude_deg 或 longitude_deg 列");
+            }
+
+            const stations = [];
+            const endpointKeys = new Set();
+            rows.slice(1).forEach((row, rowIndex) => {
+                if (row.every(value => String(value || "").trim() === "")) return;
+                const pairName = String(row[pairColumn] || "").trim();
+                const role = String(row[roleColumn] || "").trim();
+                const name = String(row[nameColumn] || "").trim();
+                const latText = String(row[latColumn] ?? "").trim();
+                const lonText = String(row[lonColumn] ?? "").trim();
+                const latDeg = Number(latText);
+                const lonDeg = Number(lonText);
+                if (!pairName || !role || !name || !latText || !lonText || !Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) {
+                    throw new Error(`第 ${rowIndex + 2} 行字段不完整`);
+                }
+                if (latDeg < -90 || latDeg > 90 || lonDeg < -180 || lonDeg > 180) {
+                    throw new Error(`第 ${rowIndex + 2} 行经纬度超出范围`);
+                }
+                const endpointKey = `${pairName}\u0000${role}`;
+                if (endpointKeys.has(endpointKey)) throw new Error(`地面站对 ${pairName} 的角色 ${role} 重复`);
+                endpointKeys.add(endpointKey);
+                const aliases = aliasColumn >= 0
+                    ? String(row[aliasColumn] || "").split(/[;|]/).map(value => value.trim()).filter(Boolean)
+                    : [];
+                stations.push({ pairName, role, name, aliases, latDeg, lonDeg });
+            });
+            if (!stations.length) throw new Error("地面站 CSV 中没有有效站点");
+            const endpointNames = new Map();
+            stations.forEach(gs => [gs.name, ...gs.aliases].forEach(value => {
+                const normalized = normalizeEndpointName(value);
+                if (!normalized) return;
+                if (endpointNames.has(normalized)) {
+                    throw new Error(`端点名称或别名 ${value} 与 ${endpointNames.get(normalized)} 重复`);
+                }
+                endpointNames.set(normalized, gs.name);
+            }));
+            const pairCounts = new Map();
+            stations.forEach(gs => pairCounts.set(gs.pairName, (pairCounts.get(gs.pairName) || 0) + 1));
+            const incomplete = Array.from(pairCounts).filter(([, count]) => count < 2).map(([pairName]) => pairName);
+            if (incomplete.length) throw new Error(`以下地面站对不足两个端点：${incomplete.join("、")}`);
+            return stations;
+        }
+
+        async function loadGroundStationFile(file) {
+            const status = document.getElementById("groundStationStatus");
+            if (!file) return;
+            try {
+                const stations = parseGroundStationConfig(await file.text());
+                groundStations = stations;
+                prepareGroundStations(groundStations, true);
+                renderGroundStationControls();
+                hoveredObject = null;
+                tooltip.style.display = "none";
+                status.textContent = `已载入 ${groundStationPairVisibility.size} 对、${groundStations.length} 个地面站。`;
+                status.style.color = "#16a34a";
+                draw();
+            } catch (error) {
+                status.textContent = `载入失败：${error.message}`;
+                status.style.color = "#dc2626";
+            } finally {
+                document.getElementById("groundStationFileInput").value = "";
+            }
+        }
+
         function parseSatelliteId(value) {
-            const match = String(value || "").match(/(?:STARLINK[_-]?)?(\d+)/i);
+            const match = String(value || "").trim().match(/^(?:STARLINK[_-]?)?(\d+)$/i);
             return match ? Number(match[1]) : null;
         }
 
@@ -879,13 +1056,21 @@
         }
 
         function endpointPosition(name) {
+            const normalizedName = normalizeEndpointName(name);
+            const station = groundStations.find(gs =>
+                [gs.name, ...gs.aliases].some(candidate => normalizeEndpointName(candidate) === normalizedName)
+            );
+            if (station) return station;
             const satId = parseSatelliteId(name);
-            if (satId && satellites[satId - 1]) return satellites[satId - 1];
-            return groundStations.find(gs => gs.name.toLowerCase() === String(name).toLowerCase()) || null;
+            return satId && satellites[satId - 1] ? satellites[satId - 1] : null;
         }
 
         function isGroundStation(point) {
             return point ? groundStations.includes(point) : false;
+        }
+
+        function shouldDrawEndpoint(point) {
+            return point ? (!isGroundStation(point) || isGroundStationVisible(point)) : false;
         }
 
         function displayedFlows() {
@@ -921,18 +1106,18 @@
             const source = endpointPosition(route.source);
             const target = endpointPosition(route.target);
             // 关闭地面站显示时，也隐藏连接地面站和卫星的虚线；卫星到卫星的路径不受影响。
-            if (source && source !== routeSats[0] && (showGroundStations || !isGroundStation(source))) {
+            if (source && source !== routeSats[0] && shouldDrawEndpoint(source)) {
                 drawPeriodicLine(source, routeSats[0], flow.color, 2, true, 0.9);
             }
             for (let i = 0; i < routeSats.length - 1; i++) drawPeriodicLine(routeSats[i], routeSats[i + 1], flow.color, 3, false, 0.95);
-            if (target && target !== routeSats[routeSats.length - 1] && (showGroundStations || !isGroundStation(target))) {
+            if (target && target !== routeSats[routeSats.length - 1] && shouldDrawEndpoint(target)) {
                 drawPeriodicLine(routeSats[routeSats.length - 1], target, flow.color, 2, true, 0.9);
             }
         }
 
         function drawGroundStations() {
             if (!showGroundStations) return;
-            groundStations.forEach(gs => {
+            groundStations.filter(isGroundStationVisible).forEach(gs => {
                 const position = getBaseScreenPos(gs.lon, gs.lat);
                 visibleCopyXs(position.x, 30).forEach(x => {
                     if (position.y < -30 || position.y > viewportHeight + 30) return;
@@ -1010,8 +1195,8 @@
                 // CSV 端点为空时退回路径首尾卫星，保证任意合法 Path 都能显示源/宿标记。
                 const source = endpointPosition(route.source) || satellites[route.ids[0] - 1];
                 const target = endpointPosition(route.target) || satellites[route.ids[route.ids.length - 1] - 1];
-                if (showGroundStations || !isGroundStation(source)) drawEndpointMarker(source, flow.color, "source");
-                if (showGroundStations || !isGroundStation(target)) drawEndpointMarker(target, flow.color, "target");
+                if (shouldDrawEndpoint(source)) drawEndpointMarker(source, flow.color, "source");
+                if (shouldDrawEndpoint(target)) drawEndpointMarker(target, flow.color, "target");
             });
         }
 
@@ -1059,7 +1244,7 @@
 
         function hitTest(pointerX, pointerY) {
             if (showGroundStations) {
-                for (const gs of groundStations) {
+                for (const gs of groundStations.filter(isGroundStationVisible)) {
                     const position = getBaseScreenPos(gs.lon, gs.lat);
                     const x = nearestPeriodicX(position.x, pointerX);
                     if (Math.hypot(pointerX - x, pointerY - position.y) <= 13) return { type: "GS", object: gs, x, y: position.y };
@@ -1083,7 +1268,9 @@
             tooltip.style.top = `${event.clientY + 14}px`;
             if (hoveredObject.type === "GS") {
                 const gs = hoveredObject.object;
-                tooltip.innerHTML = `<strong>${escapeHTML(gs.name)}</strong><br>经度 ${gs.lonDeg.toFixed(2)}° · 纬度 ${gs.latDeg.toFixed(2)}°`;
+                tooltip.innerHTML = `<strong>${escapeHTML(gs.name)}</strong><br>` +
+                    `${escapeHTML(gs.pairName)} · ${escapeHTML(gs.role)}<br>` +
+                    `经度 ${gs.lonDeg.toFixed(2)}° · 纬度 ${gs.latDeg.toFixed(2)}°`;
             } else {
                 const sat = hoveredObject.object;
                 tooltip.innerHTML = `<strong>STARLINK_${sat.id}</strong><br>轨道面 ${sat.plane} · 面内编号 ${sat.index}`;
@@ -1100,12 +1287,106 @@
             draw();
         }
 
+        // ============================== 服务器目录浏览 ==============================
+        // 浏览器原生文件选择器只能访问客户端文件系统。这里通过同源 API 浏览由
+        // serve_webui.py 明确授权的数据根目录，并把返回内容包装成现有解析器所需的 File 接口。
+        let browsingServerDirectory = "";
+
+        async function requestJSON(url, options) {
+            const response = await fetch(url, options);
+            let payload;
+            try { payload = await response.json(); }
+            catch (_) { throw new Error("服务器未返回有效的 JSON；请确认页面由 serve_webui.py 提供"); }
+            if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+            return payload;
+        }
+
+        async function browseServerDirectory(path = "") {
+            const status = document.getElementById("loadingStatus");
+            const list = document.getElementById("serverDirectoryList");
+            list.innerHTML = '<div class="empty">正在读取服务器目录…</div>';
+            try {
+                const payload = await requestJSON(`/api/directories?path=${encodeURIComponent(path)}`);
+                browsingServerDirectory = payload.current;
+                document.getElementById("serverDirectoryCurrent").textContent = payload.current;
+                const entries = [];
+                if (payload.parent) entries.push({ name: "↩ 上级目录", path: payload.parent });
+                entries.push(...payload.directories.map(directory => ({
+                    name: `📁 ${directory.name}`,
+                    path: directory.path
+                })));
+                list.replaceChildren();
+                if (!entries.length) {
+                    list.innerHTML = '<div class="empty">当前目录没有子目录</div>';
+                } else {
+                    entries.forEach(entry => {
+                        const button = document.createElement("button");
+                        button.type = "button";
+                        button.className = "directory-entry";
+                        button.textContent = entry.name;
+                        button.addEventListener("click", () => browseServerDirectory(entry.path));
+                        list.appendChild(button);
+                    });
+                }
+            } catch (error) {
+                list.innerHTML = `<div class="empty">${escapeHTML(error.message)}</div>`;
+                status.textContent = `无法浏览服务器目录：${error.message}`;
+                status.style.color = "#dc2626";
+            }
+        }
+
+        async function openServerDirectoryDialog() {
+            const dialog = document.getElementById("directoryDialog");
+            if (!dialog.open) dialog.showModal();
+            await browseServerDirectory(document.getElementById("serverDirectoryPath").value);
+        }
+
+        function selectCurrentServerDirectory() {
+            if (!browsingServerDirectory) return;
+            document.getElementById("serverDirectoryPath").value = browsingServerDirectory;
+            document.getElementById("loadServerDirectoryButton").disabled = false;
+            document.getElementById("directoryDialog").close();
+        }
+
+        async function loadServerRouteDirectory() {
+            const path = document.getElementById("serverDirectoryPath").value;
+            const status = document.getElementById("loadingStatus");
+            const button = document.getElementById("loadServerDirectoryButton");
+            if (!path) return;
+            button.disabled = true;
+            status.style.color = "#b45309";
+            status.textContent = "正在从服务器读取 CSV…";
+            try {
+                const payload = await requestJSON("/api/route-files", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path })
+                });
+                const files = payload.files.map(file => ({
+                    name: file.name,
+                    webkitRelativePath: file.relativePath,
+                    text: async () => file.text
+                }));
+                await loadRouteFiles(files);
+            } catch (error) {
+                status.textContent = `载入服务器目录失败：${error.message}`;
+                status.style.color = "#dc2626";
+            } finally {
+                button.disabled = false;
+            }
+        }
+
         // ============================== 初始化与事件绑定 ==============================
         document.getElementById("timeSlider").addEventListener("input", event => {
             currentTime = new Date(startTime.getTime() + Number(event.target.value) * 1000);
             updateFrame();
         });
         document.getElementById("folderInput").addEventListener("change", event => loadRouteFiles(event.target.files));
+        document.getElementById("browseServerDirectoryButton").addEventListener("click", openServerDirectoryDialog);
+        document.getElementById("loadServerDirectoryButton").addEventListener("click", loadServerRouteDirectory);
+        document.getElementById("selectDirectoryButton").addEventListener("click", selectCurrentServerDirectory);
+        document.getElementById("cancelDirectoryButton").addEventListener("click", () => document.getElementById("directoryDialog").close());
+        document.getElementById("closeDirectoryDialogButton").addEventListener("click", () => document.getElementById("directoryDialog").close());
         document.getElementById("inpSearch").addEventListener("keydown", event => { if (event.key === "Enter") doSearch(); });
         document.getElementById("constellationSelect").addEventListener("change", event => applyConstellationPreset(event.target.value));
         document.getElementById("activeMethodSelect").addEventListener("change", event => setActiveMethod(event.target.value));
@@ -1141,7 +1422,21 @@
                 hoveredObject = null;
                 tooltip.style.display = "none";
             }
+            renderGroundStationControls();
             draw();
+        });
+        document.getElementById("groundStationPairList").addEventListener("change", event => {
+            if (!event.target.classList.contains("ground-pair-toggle")) return;
+            const pairName = event.target.dataset.pairName;
+            groundStationPairVisibility.set(pairName, event.target.checked);
+            if (hoveredObject && hoveredObject.type === "GS" && !isGroundStationVisible(hoveredObject.object)) {
+                hoveredObject = null;
+                tooltip.style.display = "none";
+            }
+            draw();
+        });
+        document.getElementById("groundStationFileInput").addEventListener("change", event => {
+            loadGroundStationFile(event.target.files && event.target.files[0]);
         });
 
         const dropZone = document.getElementById("dropZone");
@@ -1183,6 +1478,7 @@
         view.offsetX = (window.innerWidth - BASE_WORLD_WIDTH * view.scale) / 2;
         view.offsetY = (window.innerHeight - BASE_WORLD_HEIGHT * view.scale) / 2;
         resize();
+        renderGroundStationControls();
         renderConstellationInfo();
         updateConstellationCompatibility();
         applyTimeSettings();

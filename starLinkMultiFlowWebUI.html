@@ -307,7 +307,23 @@
             { pairName: "Beijing-Brasilia", role: "source", name: "Beijing", aliases: ["Beijing_Source"], latDeg: 39.9042, lonDeg: 116.4074 },
             { pairName: "Beijing-Brasilia", role: "target", name: "Brasilia", aliases: ["Brasilia_Target"], latDeg: -15.7975, lonDeg: -47.8919 },
             { pairName: "NewYork-London", role: "source", name: "NewYork", aliases: ["NewYork_Source", "New_York"], latDeg: 40.7128, lonDeg: -74.0060 },
-            { pairName: "NewYork-London", role: "target", name: "London", aliases: ["London_Target"], latDeg: 51.5074, lonDeg: -0.1278 }
+            { pairName: "NewYork-London", role: "target", name: "London", aliases: ["London_Target"], latDeg: 51.5074, lonDeg: -0.1278 },
+            { pairName: "LosAngeles-Tokyo", role: "source", name: "LosAngeles", aliases: ["LosAngeles_Source", "Los_Angeles"], latDeg: 34.0522, lonDeg: -118.2437 },
+            { pairName: "LosAngeles-Tokyo", role: "target", name: "Tokyo", aliases: ["Tokyo_Target"], latDeg: 35.6762, lonDeg: 139.6503 },
+            { pairName: "SanFrancisco-Sydney", role: "source", name: "SanFrancisco", aliases: ["SanFrancisco_Source", "San_Francisco"], latDeg: 37.7749, lonDeg: -122.4194 },
+            { pairName: "SanFrancisco-Sydney", role: "target", name: "Sydney", aliases: ["Sydney_Target"], latDeg: -33.8688, lonDeg: 151.2093 },
+            { pairName: "HongKong-Singapore", role: "source", name: "HongKong", aliases: ["HongKong_Source", "Hong_Kong"], latDeg: 22.3193, lonDeg: 114.1694 },
+            { pairName: "HongKong-Singapore", role: "target", name: "Singapore", aliases: ["Singapore_Target"], latDeg: 1.3521, lonDeg: 103.8198 },
+            { pairName: "Frankfurt-Mumbai", role: "source", name: "Frankfurt", aliases: ["Frankfurt_Source"], latDeg: 50.1109, lonDeg: 8.6821 },
+            { pairName: "Frankfurt-Mumbai", role: "target", name: "Mumbai", aliases: ["Mumbai_Target"], latDeg: 19.0760, lonDeg: 72.8777 },
+            { pairName: "Madrid-Dubai", role: "source", name: "Madrid", aliases: ["Madrid_Source"], latDeg: 40.4168, lonDeg: -3.7038 },
+            { pairName: "Madrid-Dubai", role: "target", name: "Dubai", aliases: ["Dubai_Target"], latDeg: 25.2048, lonDeg: 55.2708 },
+            { pairName: "Miami-SaoPaulo", role: "source", name: "Miami", aliases: ["Miami_Source"], latDeg: 25.7617, lonDeg: -80.1918 },
+            { pairName: "Miami-SaoPaulo", role: "target", name: "SaoPaulo", aliases: ["SaoPaulo_Target", "Sao_Paulo"], latDeg: -23.5505, lonDeg: -46.6333 },
+            { pairName: "Johannesburg-Lagos", role: "source", name: "Johannesburg", aliases: ["Johannesburg_Source"], latDeg: -26.2041, lonDeg: 28.0473 },
+            { pairName: "Johannesburg-Lagos", role: "target", name: "Lagos", aliases: ["Lagos_Target"], latDeg: 6.5244, lonDeg: 3.3792 },
+            { pairName: "Toronto-Amsterdam", role: "source", name: "Toronto", aliases: ["Toronto_Source"], latDeg: 43.6532, lonDeg: -79.3832 },
+            { pairName: "Toronto-Amsterdam", role: "target", name: "Amsterdam", aliases: ["Amsterdam_Target"], latDeg: 52.3676, lonDeg: 4.9041 }
         ];
         const groundStationPairVisibility = new Map();
 
@@ -644,13 +660,14 @@
             return rowIndex > 0 ? `${stableFileKey}#${rowIndex + 1}` : stableFileKey;
         }
 
-        // 方法名优先使用用户输入；未输入时，取 flow_000 目录的直接上级目录。
-        // 例如 results/MAPPO/flow_000/a.csv 会识别为 MAPPO，用户因此既可以逐个选择方法目录，
-        // 也可以一次选择包含多个方法的 results 总目录。浏览器未提供相对路径时使用本批次兜底名称。
+        // 方法名优先使用用户输入；未输入时，从 Route_Links_<方法名> 目录或 flow_000
+        // 的直接上级目录推断。浏览器未提供足够的目录信息时使用本批次兜底名称。
         function inferMethodId(file, methodNameOverride, fallbackMethodName) {
             if (methodNameOverride) return methodNameOverride;
             const relativePath = String(file.webkitRelativePath || "").replace(/\\/g, "/");
             const parts = relativePath.split("/").filter(Boolean);
+            const routeMethodDirectory = parts.find(part => /^route_links_.+/i.test(part));
+            if (routeMethodDirectory) return routeMethodDirectory.replace(/^route_links_/i, "");
             const flowDirectoryIndex = parts.findIndex(part => /^flow[_-]?\d+$/i.test(part));
             if (flowDirectoryIndex > 0) return parts[flowDirectoryIndex - 1];
             return fallbackMethodName;
@@ -666,6 +683,7 @@
             const sourceColumn = findColumn(headers, ["sourcegs", "source", "src"]);
             const targetColumn = findColumn(headers, ["targetgs", "target", "destination", "dest", "dst"]);
             const flowColumn = findColumn(headers, ["flowid", "flow_id", "flow"]);
+            const pairNameColumn = findColumn(headers, ["pairname", "pair_name"]);
             if (pathColumn < 0) return [];
 
             return rows.slice(1).map((row, rowIndex) => {
@@ -675,6 +693,7 @@
                 return {
                     methodId: inferMethodId(file, methodNameOverride, fallbackMethodName),
                     flowId: inferFlowId(file, row, flowColumn, rowIndex),
+                    pairName: pairNameColumn >= 0 ? String(row[pairNameColumn] || "").trim() : "",
                     timestamp: timestamp.getTime(),
                     ids,
                     outage,
@@ -724,12 +743,16 @@
                         const colorIndex = flows.size % FLOW_COLORS.length;
                         flows.set(flowId, {
                             id: flowId,
-                            label: /^\d+$/.test(flowId) ? `流 ${flowId}` : flowId,
+                            pairName: record.pairName,
+                            label: record.pairName || (/^\d+$/.test(flowId) ? `流 ${flowId}` : flowId),
                             color: FLOW_COLORS[colorIndex],
                             visible: previousVisibility.get(flowId) ?? true,
                             timeline: [],
                             current: null
                         });
+                    } else if (record.pairName && !flows.get(flowId).pairName) {
+                        flows.get(flowId).pairName = record.pairName;
+                        flows.get(flowId).label = record.pairName;
                     }
                     flows.get(flowId).timeline.push(record);
                 });
@@ -820,8 +843,14 @@
             if (!sortedFlowIds.includes(comparisonState.flowId)) comparisonState.flowId = sortedFlowIds[0] || "";
             select.innerHTML = sortedFlowIds.map(flowId => {
                 let methodCount = 0;
-                methodMap.forEach(method => { if (method.flows.has(flowId)) methodCount++; });
-                const label = /^\d+$/.test(flowId) ? `流 ${flowId}` : flowId;
+                let label = "";
+                methodMap.forEach(method => {
+                    const flow = method.flows.get(flowId);
+                    if (!flow) return;
+                    methodCount++;
+                    if (!label || flow.pairName) label = flow.pairName || (/^\d+$/.test(flowId) ? `流 ${flowId}` : flowId);
+                });
+                if (!label) label = /^\d+$/.test(flowId) ? `流 ${flowId}` : flowId;
                 return `<option value="${escapeHTML(flowId)}" ${flowId === comparisonState.flowId ? "selected" : ""}>` +
                     `${escapeHTML(label)}（${methodCount}/${methodMap.size} 个方法）</option>`;
             }).join("");
@@ -1364,7 +1393,8 @@
                 });
                 const files = payload.files.map(file => ({
                     name: file.name,
-                    webkitRelativePath: file.relativePath,
+                    // 服务端选择到距离子目录时，仍保留其祖先目录，以便识别 Route_Links_<方法名>。
+                    webkitRelativePath: `${payload.directory}/${file.relativePath}`,
                     text: async () => file.text
                 }));
                 await loadRouteFiles(files);

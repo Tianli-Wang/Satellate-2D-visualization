@@ -378,7 +378,8 @@
         // --- Physics ---
         // MARL-LISL 数据集共有 6080 颗卫星。仿真节点采用 0-based ID，导出器会
         // 转成此页面使用的 STARLINK_1 ... STARLINK_6080 一基编号。
-        const P = 190, N = 32, F = 17;
+        // 默认保留原6080星模式，R1文件导入时切到72×22；F沿用原Walker示意值。
+        let P = 190, N = 32, F = 17;
         const INC = 53 * (Math.PI / 180);
         const Re = 6378.137, h = 550.0;
         const mu = 398600.4418, a = Re + h;
@@ -406,6 +407,8 @@
         mapImage.src = './map.jpg';
         mapImage.onload = () => draw();
 
+        // 首次绘制时尚无悬停对象，明确初始化以保证直接打开页面可用。
+        let hoveredObj = null;
         const canvas = document.getElementById('topoCanvas');
         const ctx = canvas.getContext('2d');
         const tooltip = document.getElementById('tooltip');
@@ -511,12 +514,51 @@
             const results = await Promise.all(promises);
             routeTimeline = results.filter(r => r !== null).sort((a, b) => a.timestamp - b.timestamp);
 
-            statusDiv.innerText = `Loaded ${routeTimeline.length} valid files.`;
+            if (!applyRouteProfile(routeTimeline)) {
+                routeTimeline = []; updateDisplay();
+                statusDiv.innerText = '请选择单个源宿对的WebUI文件夹。'; return;
+            }
+            statusDiv.innerText = `Loaded ${routeTimeline.length} valid files. ${P * N} satellites.`;
             setTimeout(() => { statusDiv.style.display = 'none'; }, 3000);
             updateRouteForCurrentTime();
         }
 
         // --- 核心修改：针对特定格式的文件名解析 ---
+
+        // R1单流文件夹不能混入其他源宿对，否则时间排序后会交替显示无关路径。
+        // 导入时按明确的Route_Format切换星座并补登记站名；不推测或改写路由节点ID。
+        function applyRouteProfile(records) {
+            const endpoints = new Set(records.map(r => r.source + '|' + r.target));
+            if (endpoints.size > 1) {
+                alert('请选择一个源宿对的 WebUI 文件夹，不能混合多个源宿对。');
+                return false;
+            }
+            const r1 = records.some(r => r.routeFormat === 'TAES_R1_1584');
+            if (r1 && records.some(r => r.routeFormat !== 'TAES_R1_1584')) {
+                alert('不能混合R1与旧格式数据，请只选择一个WebUI目录。');
+                return false;
+            }
+            P = r1 ? 72 : 190; N = r1 ? 22 : 32; F = 17;
+            const catalog = {"Beijing": {"latDeg": 39.9042, "lonDeg": 116.4074}, "Brasilia": {"latDeg": -15.7975, "lonDeg": -47.8919}, "NewYork": {"latDeg": 40.7128, "lonDeg": -74.006}, "London": {"latDeg": 51.5074, "lonDeg": -0.1278}, "LosAngeles": {"latDeg": 34.0522, "lonDeg": -118.2437}, "Tokyo": {"latDeg": 35.6762, "lonDeg": 139.6503}, "SanFrancisco": {"latDeg": 37.7749, "lonDeg": -122.4194}, "Sydney": {"latDeg": -33.8688, "lonDeg": 151.2093}, "HongKong": {"latDeg": 22.3193, "lonDeg": 114.1694}, "Singapore": {"latDeg": 1.3521, "lonDeg": 103.8198}, "Frankfurt": {"latDeg": 50.1109, "lonDeg": 8.6821}, "Mumbai": {"latDeg": 19.076, "lonDeg": 72.8777}, "Madrid": {"latDeg": 40.4168, "lonDeg": -3.7038}, "Dubai": {"latDeg": 25.2048, "lonDeg": 55.2708}, "Miami": {"latDeg": 25.7617, "lonDeg": -80.1918}, "SaoPaulo": {"latDeg": -23.5505, "lonDeg": -46.6333}, "Johannesburg": {"latDeg": -26.2041, "lonDeg": 28.0473}, "Lagos": {"latDeg": 6.5244, "lonDeg": 3.3792}, "Toronto": {"latDeg": 43.6532, "lonDeg": -79.3832}, "Amsterdam": {"latDeg": 52.3676, "lonDeg": 4.9041}};
+            for (const record of records) {
+                for (const name of [record.source, record.target]) {
+                    if (!groundStations.some(gs => gs.name === name) && catalog[name]) {
+                        const gs = { name, ...catalog[name] };
+                        gs.lat = gs.latDeg * Math.PI / 180;
+                        gs.lon = gs.lonDeg * Math.PI / 180;
+                        groundStations.push(gs);
+                    }
+                }
+            }
+            if (r1 && records.length > 0) {
+                // 使用导出文件的起止时刻，避免仍停在当天时间或上一数据集时间。
+                document.getElementById('inpStart').value = new Date(records[0].timestamp).toString();
+                document.getElementById('inpStop').value = new Date(Math.max(records.at(-1).timestamp, records[0].timestamp + 1000)).toString();
+                applyTimeSettings();
+            }
+            return true;
+        }
+
         function extractTimeFromFilename(filename) {
             // 目标格式: ..._step_时间步_日_月_年_时_分_秒_微秒.csv
             // 例子: Calculated_step0001_27_Feb_2025_00_00_00_000000000.csv
@@ -568,10 +610,12 @@
             const srcIndex = headers.findIndex(h => h.trim() === 'SourceGS');
             const tgtIndex = headers.findIndex(h => h.trim() === 'TargetGS');
 
+            const formatIndex = headers.findIndex(h => h.trim() === 'Route_Format');
             const dataRow = lines[1];
             if (!dataRow) return null;
             const cells = dataRow.split(',');
 
+            const routeFormat = formatIndex !== -1 ? cells[formatIndex].trim() : '';
             let rawPath = (pathIndex !== -1) ? cells[pathIndex] : null;
             let sourceName = (srcIndex !== -1) ? cells[srcIndex].trim() : null;
             let targetName = (tgtIndex !== -1) ? cells[tgtIndex].trim() : null;
@@ -586,7 +630,7 @@
             // MARL-LISL 导出器用 OUTAGE 表示该时隙没有可行路径。仍保留这条时间
             // 记录，并用空 ID 数组清除上一时隙的高亮线路。
             if (rawPath.trim() === 'OUTAGE') {
-                return { ids: [], source: sourceName, target: targetName, rawPath: rawPath };
+                return { ids: [], source: sourceName, target: targetName, rawPath: rawPath, routeFormat };
             }
 
             const ids = [];
@@ -595,11 +639,14 @@
                 if (idMatch) ids.push(parseInt(idMatch[1]));
             });
 
-            return { ids: ids, source: sourceName, target: targetName, rawPath: rawPath };
+            return { ids: ids, source: sourceName, target: targetName, rawPath: rawPath, routeFormat };
         }
 
         function updateRouteForCurrentTime() {
-            if (routeTimeline.length === 0) return;
+            if (routeTimeline.length === 0) {
+                activePathIds = []; currentRouteGS = { source: null, target: null };
+                renderPathUI(null); return;
+            }
             const currentTs = currentTimeObj.getTime();
             let bestMatch = null;
 
